@@ -1,0 +1,18 @@
+# Generated outputs
+dist/
+*.d.ts
+*.d.ts.map
+*.js.map
+tsconfig.tsbuildinfo
+
+# Node modules
+node_modules/
+
+# Build cache
+.turbo/
+
+# IDE files
+.vscode/
+
+# Coverage
+coverage/

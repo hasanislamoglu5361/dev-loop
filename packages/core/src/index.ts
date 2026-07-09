@@ -8,3 +8,5 @@ export * from './db/schema.js';
 export * from './utils/cost-calculator.js';
 export * from './utils/file-system.js';
 export * from './utils/token-counter.js';
+export * from './types.js';
+export { DevLoopError, ConfigError, DatabaseError, ModelError, VerifierError, PlanningError, MigrationAbortedError } from './errors.js';

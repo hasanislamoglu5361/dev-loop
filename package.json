@@ -35,7 +35,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "lint": "eslint packages/*/src --ext .ts,.tsx",
+    "lint": "eslint packages/*/src",
     "typecheck": "tsc --noEmit -p tsconfig.base.json",
     "format": "prettier --write packages/*/src",
     "clean": "turbo clean",
@@ -52,6 +52,7 @@
     "prettier": "^3.0.0",
     "turbo": "^2.0.0",
     "typescript": "^5.4.0",
+    "typescript-eslint": "^8.63.0",
     "vitest": "^1.6.0",
     "yaml": "^2.9.0"
   }
