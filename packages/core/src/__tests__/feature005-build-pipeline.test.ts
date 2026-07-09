@@ -116,4 +116,28 @@ describe('FEATURE005 - Build Pipeline With Turbo', () => {
       cleanupTempProject(temp);
     }
   });
+
+  it('repairs missing emitted runtime files on rebuild', () => {
+    runCommand('npm', ['run', 'build', '--', '--force']);
+
+    const emittedFiles = [
+      fromRoot('packages/core/dist/errors.js'),
+      fromRoot('packages/core/dist/errors.d.ts'),
+      fromRoot('packages/core/dist/errors.js.map'),
+      fromRoot('packages/core/dist/errors.d.ts.map'),
+    ];
+
+    for (const emittedFile of emittedFiles) {
+      fs.rmSync(emittedFile, { force: true });
+      expect(fs.existsSync(emittedFile)).toBe(false);
+    }
+
+    runCommand('npm', ['run', 'build', '--', '--force']);
+
+    expect(fs.existsSync(fromRoot('packages/core/dist/errors.js'))).toBe(true);
+    runCommand('node', [
+      '-e',
+      "await import('./packages/core/dist/index.js'); await import('./packages/core/dist/db/index.js'); console.log('core dist imports ok')",
+    ]);
+  });
 });

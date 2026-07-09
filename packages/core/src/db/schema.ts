@@ -5,7 +5,6 @@ import { sql } from 'drizzle-orm';
 import { integer, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 const createdAt = () => text('created_at').notNull().default(sql`(datetime('now'))`);
-const nullableCreatedAt = () => text('created_at').default(sql`(datetime('now'))`);
 
 export const loopHistory = sqliteTable('loop_history', {
   id: integer('id').primaryKey({ autoIncrement: true }),

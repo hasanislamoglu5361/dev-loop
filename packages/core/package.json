@@ -6,6 +6,10 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "package.json"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -17,8 +21,9 @@
     }
   },
   "scripts": {
-    "build": "tsc",
-    "clean": "rm -rf dist"
+    "build": "rm -rf dist tsconfig.tsbuildinfo tsconfig.build.tsbuildinfo && tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo tsconfig.build.tsbuildinfo",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.0",

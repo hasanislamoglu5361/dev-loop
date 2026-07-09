@@ -7,6 +7,10 @@
   "private": true,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "package.json"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -14,9 +18,11 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "rm -rf dist tsconfig.tsbuildinfo && tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "@dev-loop/core": "0.1.0",

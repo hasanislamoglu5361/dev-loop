@@ -6,10 +6,6 @@ import { execSync } from 'node:child_process';
 describe('BUG028 - ESLint TypeScript parsing', () => {
   const rootDir = path.resolve(__dirname, '../../../..');
 
-  function readJson(relPath: string): unknown {
-    return JSON.parse(fs.readFileSync(path.join(rootDir, relPath), 'utf8'));
-  }
-
   it('ESLint flat config imports typescript-eslint parser', () => {
     const configContent = fs.readFileSync(
       path.join(rootDir, 'eslint.config.js'),

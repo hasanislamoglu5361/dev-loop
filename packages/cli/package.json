@@ -9,6 +9,10 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "package.json"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -16,10 +20,11 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "rm -rf dist tsconfig.tsbuildinfo && tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "@dev-loop/core": "0.1.0",

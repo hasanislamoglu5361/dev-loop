@@ -14,17 +14,7 @@ export function countTokensHeuristic(text: string, modelFamily?: 'claude' | 'gpt
   // Claude token estimation: ~3.5 characters per token on average
   const charPerToken = modelFamily === 'claude' ? 3.5 : 4;
 
-  let count = 0;
-  for (const char of text) {
-    if (char === '\n') continue; // Newlines don't count as tokens in Claude
-    if (char.trim() !== '') {
-      count++;
-    } else {
-      count += 0.25; // Whitespace counts ~1/4 token
-    }
-  }
-
-  return Math.ceil(count);
+  return Math.ceil(text.length / charPerToken);
 }
 
 /** Count tokens for OpenAI-compatible models using a character-based heuristic */

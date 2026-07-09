@@ -2679,3 +2679,131 @@ Future local-model rules:
 - For TypeScript tests, avoid `as any` unless the test is specifically about unsafe values; `safeParse` already accepts `unknown`.
 - Run direct `tsc` or `npm run typecheck` after changing tests, not only Vitest.
 - Treat review/audit bug files as stale until the exact acceptance commands have been re-run in the current checkout.
+
+## BUG031-BUG033 Batch: Deterministic Build, Package Tarballs, and Zero-Warning Lint
+
+Date: 2026-07-09
+
+Scope:
+
+- `BUGS/BUG031-core-build-does-not-repair-missing-dist-files.md`
+- `BUGS/BUG032-core-package-tarball-omits-dist-and-ships-tests.md`
+- `BUGS/BUG033-lint-command-passes-with-unused-code-warnings.md`
+
+What changed:
+
+- Made package builds deterministic by cleaning `dist` and package-level TypeScript build info before compiling.
+- Added `packages/core/tsconfig.build.json` so the core runtime build excludes `src/**/__tests__/**` while the normal `tsconfig.json` can still typecheck the full package during root typecheck.
+- Changed `@dev-loop/core` build to use `tsc -p tsconfig.build.json`.
+- Added `files` whitelists to `packages/core/package.json`, `packages/cli/package.json`, and `packages/ui/package.json` so tarballs ship `dist` and `package.json`, not source/test trees.
+- Added `prepack` scripts to core, cli, and ui so `npm pack --workspace ...` builds the package before tarball assembly.
+- Added a build regression test in `feature005-build-pipeline.test.ts` that deletes `packages/core/dist/errors.js`, rebuilds, and imports the built core entry points.
+- Added a package metadata regression test that runs `npm pack --workspace @dev-loop/core --dry-run --json` and asserts:
+  - `dist/index.js` is included,
+  - `dist/index.d.ts` is included,
+  - `dist/db/index.js` is included,
+  - `src/__tests__/` is excluded,
+  - `dist/__tests__/` is excluded.
+- Removed lint warning sources:
+  - deleted unused `readJson()` helper from `bug028-eslint-typescript.test.ts`,
+  - rewrote `feature008-shared-domain-types.test.ts` as type-level fixture assertions,
+  - removed unused `nullableCreatedAt()` from `db/schema.ts`,
+  - made `countTokensHeuristic()` actually use its `charPerToken` model-family ratio.
+
+Why:
+
+- `npm run build -- --force` could report success after a required emitted file was deleted, because stale incremental state could make `tsc` skip re-emitting missing outputs.
+- A successful build is not enough if the built package cannot be imported. Runtime smoke imports must be part of the proof for package entry points.
+- `npm pack --workspace @dev-loop/core --dry-run` originally omitted `dist` because `dist/` is ignored and there was no `files` whitelist. After adding `files`, the first attempt still included `dist/__tests__` because the production build emitted tests.
+- Source tests and compiled test artifacts do not belong in the runtime package tarball.
+- Lint warnings had become accepted background noise; removing them made `npm run lint` produce no warnings and restored its usefulness as a signal.
+
+What was tried and learned:
+
+- Tried relying on `npm run build -- --force` alone after deleting `packages/core/dist/errors.js`; it still exited `0` and did not restore the file. This proved Turbo force mode was not enough because the package-level TypeScript incremental state was stale.
+- Tried `npm pack --workspace @dev-loop/core --dry-run --json` after adding package `files`; `dist` appeared, but `dist/__tests__` also appeared. This showed packaging was fixed only halfway and build output itself needed a runtime-only config.
+- `npm pack --json` output includes lifecycle script logs before the JSON array when `prepack` runs. Tests parse from the first `[\n` before calling `JSON.parse`.
+- Did not use a broad source deletion or move tests out of `src`; that would have been disruptive. A dedicated `tsconfig.build.json` kept the production emit clean while preserving the existing test layout.
+- Did not make `lint` use `--max-warnings=0` in this batch. It is now safe to do later because current lint output is warning-free, but changing policy was not required to close the three bugs.
+
+How:
+
+- Build scripts now use explicit clean-then-compile:
+
+```json
+"build": "rm -rf dist tsconfig.tsbuildinfo tsconfig.build.tsbuildinfo && tsc -p tsconfig.build.json"
+```
+
+for core, and equivalent package-local clean builds for cli/ui.
+
+- Core production emit uses:
+
+```json
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "dist/.tsbuildinfo"
+  },
+  "exclude": ["dist", "node_modules", "src/**/__tests__/**"]
+}
+```
+
+- Package `files` whitelists use:
+
+```json
+"files": [
+  "dist",
+  "package.json"
+]
+```
+
+- The build repair test intentionally mutates ignored `dist` output, not tracked source:
+  1. run `npm run build -- --force`,
+  2. delete `dist/errors.*`,
+  3. assert the files are gone,
+  4. run `npm run build -- --force`,
+  5. assert `dist/errors.js` exists,
+  6. import built core entry points with Node.
+
+Verification:
+
+```bash
+npm test -- packages/core/src/__tests__/feature005-build-pipeline.test.ts
+npm test -- packages/core/src/__tests__/package-metadata.test.ts
+npm test -- packages/core/src/__tests__/feature008-shared-domain-types.test.ts packages/core/src/__tests__/token-counter.test.ts packages/core/src/__tests__/bug028-eslint-typescript.test.ts
+npm run lint
+npm run typecheck
+npm run build -- --force
+npm pack --workspace @dev-loop/core --dry-run --json
+npm pack --workspace @dev-loop/cli --dry-run --json
+npm pack --workspace @dev-loop/ui --dry-run --json
+node packages/cli/dist/main.js --help
+node -e "await import('./packages/core/dist/index.js'); await import('./packages/core/dist/db/index.js'); await import('./packages/cli/dist/index.js'); await import('./packages/ui/dist/index.js'); console.log('dist imports ok')"
+npm test
+find packages/*/src -type f \( -name '*.js' -o -name '*.d.ts' -o -name '*.js.map' -o -name '*.d.ts.map' \) -print
+```
+
+Observed result:
+
+- FEATURE005 targeted test: 11 tests passed.
+- Package metadata targeted test: 2 tests passed.
+- Lint cleanup targeted tests: 17 tests passed.
+- Full `npm test`: 29 files, 139 tests passed.
+- `npm run lint`: exit 0 with no warnings.
+- `npm run typecheck`: passed.
+- `npm run build -- --force`: passed with cache bypass for core, cli, and ui.
+- Core dry-run package: includes `dist/index.js`, `dist/index.d.ts`, `dist/db/index.js`; excludes `src/__tests__` and `dist/__tests__`.
+- CLI dry-run package: includes `dist/main.js` and `dist/index.js`; excludes `src/`.
+- UI dry-run package: includes `dist/index.js`; excludes `src/`.
+- Built CLI help command passed.
+- Built package imports passed.
+- Generated source artifacts under `packages/*/src`: none.
+
+Future local-model rules:
+
+- Never trust a build command alone for publishable packages; import built entry points after building.
+- If a package uses TypeScript incremental builds, a production build should clean ignored output or keep build info inside the cleaned output directory.
+- Use a dedicated build tsconfig when tests live under `src` but should not be emitted or packed.
+- Add `files` whitelists for packages whose runtime entry points live in ignored directories like `dist`.
+- Test tarball contents with `npm pack --dry-run --json`; parse lifecycle-log-prefixed output carefully.
+- Keep lint output warning-free before increasing lint strictness. A quiet lint command is easier for local models to reason about than "green with warnings."
