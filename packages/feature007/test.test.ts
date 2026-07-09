@@ -3,8 +3,9 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
-const ROOT_DIR = '/Users/hasanislamoglu/dev-loop';
+const ROOT_DIR = process.cwd();
 
 describe('ESLint Configuration for FEATURE007', () => {
   const eslintConfigPath = path.join(ROOT_DIR, 'eslint.config.js');
@@ -13,23 +14,14 @@ describe('ESLint Configuration for FEATURE007', () => {
     expect(fs.existsSync(eslintConfigPath)).toBe(true);
   });
 
-  it('should include TypeScript source files in config comments', () => {
-    const content = fs.readFileSync(eslintConfigPath, 'utf8');
-    expect(content).toMatch(/\.ts|typescript/i);
-  });
+  it('should run the root lint command without missing-config errors', () => {
+    const output = execFileSync('npm', ['run', 'lint'], {
+      cwd: ROOT_DIR,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
 
-  it('should exclude dist and node_modules from linting', () => {
-    const content = fs.readFileSync(eslintConfigPath, 'utf8');
-    expect(content).toMatch(/dist|node_modules/);
-  });
-
-  it('should be valid JavaScript that can be parsed', () => {
-    try {
-      // Try to parse the config file as JavaScript
-      require(eslintConfigPath);
-    } catch (error) {
-      // If it's a module, that's okay - we're just checking syntax validity
-      expect((error as Error).message).not.toContain('SyntaxError');
-    }
+    expect(output).not.toContain('missing-config');
+    expect(output).not.toContain('Cannot find config');
   });
 });

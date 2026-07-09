@@ -3,153 +3,82 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import YAML from 'yaml';
+import { ConfigError } from '../errors.js';
+import { applyEnvOverrides } from './env-overrides.js';
+import { interpolateConfig, interpolateEnvValue, type ConfigWarning } from './interpolate.js';
+import { mergeDefaults } from './merge.js';
+import { parseYamlObject } from './parse.js';
 import { ConfigSchema, type DevLoopConfig } from './schema.js';
+import { writeYamlFile } from './writer.js';
+
+export { applyEnvOverrides } from './env-overrides.js';
+export { mergeDefaults } from './merge.js';
+export type { ConfigWarning } from './interpolate.js';
+
+export interface LoadConfigOptions {
+  projectDir?: string;
+  configPath?: string;
+  env?: NodeJS.ProcessEnv;
+  onWarning?: (warning: ConfigWarning) => void;
+  invalidConfig?: 'throw' | 'warn-and-default';
+}
 
 /** Interpolate ${ENV_VAR} references in a string value */
 export function interpolateEnv(value: string): string {
-  return value.replace(/\$\{(\w+)\}/g, (_match, envVar) => {
-    const envValue = process.env[envVar];
-    if (envValue === undefined || envValue === '') {
-      console.warn(`⚠️ dev-loop: Environment variable ${envVar} is not set`);
-      return value; // Keep original if env var missing
-    }
-    return envValue;
+  return interpolateEnvValue(value, {
+    env: process.env,
+    onWarning: warning => console.warn(`dev-loop: ${warning.message}`),
   });
 }
 
-/** Recursively interpolate environment variables in all string values of an object */
-function deepInterpolate(obj: unknown): unknown {
-  if (typeof obj === 'string') {
-    return interpolateEnv(obj);
-  }
-  if (Array.isArray(obj)) {
-    return obj.map(item => deepInterpolate(item));
-  }
-  if (obj !== null && typeof obj === 'object' && !(obj instanceof Date)) {
-    const result: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
-      // Skip DEV_LOOP_ prefixed env vars in the YAML itself
-      if (key.startsWith('DEV_LOOP_')) continue;
-      result[key] = deepInterpolate(value);
-    }
-    return result;
-  }
-  return obj;
-}
-
 function parseYamlConfig(rawContent: string): Record<string, unknown> {
-  try {
-    const parsed = YAML.parse(rawContent) ?? {};
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error('dev-loop.yaml must contain a YAML object at the top level.');
-    }
-    return parsed as Record<string, unknown>;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Invalid dev-loop.yaml: ${message}`);
-  }
+  return parseYamlObject(rawContent);
 }
 
 /** Load and validate dev-loop.yaml configuration from the given directory */
 export async function loadConfig(
-  projectDir: string = process.cwd(),
-  configPath?: string,
+  optionsOrProjectDir: LoadConfigOptions | string = {},
+  legacyConfigPath?: string,
 ): Promise<DevLoopConfig> {
-  const filePath = configPath || path.join(projectDir, 'dev-loop.yaml');
+  const options: LoadConfigOptions = typeof optionsOrProjectDir === 'string'
+    ? { projectDir: optionsOrProjectDir, configPath: legacyConfigPath, invalidConfig: 'warn-and-default' }
+    : optionsOrProjectDir;
+  const projectDir = options.projectDir ?? process.cwd();
+  const filePath = options.configPath ?? path.join(projectDir, 'dev-loop.yaml');
+  const env = options.env ?? process.env;
+  const invalidConfig = options.invalidConfig ?? 'throw';
 
   if (!fs.existsSync(filePath)) {
-    // Return defaults if no config file exists yet
     return ConfigSchema.parse({});
   }
 
   const rawContent = fs.readFileSync(filePath, 'utf-8');
+  const parsed = parseYamlObject(rawContent);
+  const interpolated = interpolateConfig(parsed, {
+    env,
+    onWarning: options.onWarning,
+  }) as Record<string, unknown>;
 
-  const parsed = parseYamlConfig(rawContent);
-  const interpolated = deepInterpolate(parsed) as Record<string, unknown>;
+  const merged = mergeDefaults(ConfigSchema.parse({}), interpolated);
+  const withEnv = applyEnvOverrides(merged, { env });
+  const validated = ConfigSchema.safeParse(withEnv);
 
-  try {
-    const merged = mergeDefaults(ConfigSchema.parse({}), interpolated);
-    const validated = ConfigSchema.safeParse(merged);
-    if (validated.success) {
-      return validated.data;
-    }
+  if (validated.success) return validated.data;
 
-    console.warn('⚠️ dev-loop: Config validation warnings:', JSON.stringify(validated.error.errors, null, 2));
-    // Return merged defaults with any valid fields
-    const fallback = ConfigSchema.parse({});
-    return mergeDefaults(fallback, interpolated as Record<string, unknown>);
-  } catch (err) {
-    console.warn('⚠️ dev-loop: Failed to parse config file:', err);
+  if (invalidConfig === 'warn-and-default') {
+    options.onWarning?.({
+      code: 'config.validation.failed',
+      message: 'Config validation failed; defaults were used.',
+      details: validated.error.errors,
+    });
     return ConfigSchema.parse({});
   }
-}
 
-/** Load DEV_LOOP_ env variable overrides and apply them to config */
-export function applyEnvOverrides(config: DevLoopConfig): DevLoopConfig {
-  const overrides: Record<string, unknown> = {};
-
-  const envOverridePaths: Record<string, string[]> = {
-    DEV_LOOP_CODING_PRIMARY_PROVIDER: ['coding', 'primary', 'provider'],
-    DEV_LOOP_CODING_PRIMARY_MODEL: ['coding', 'primary', 'model'],
-    DEV_LOOP_CODING_PRIMARY_MAX_TOKENS: ['coding', 'primary', 'max_tokens'],
-    DEV_LOOP_CODING_PRIMARY_TEMPERATURE: ['coding', 'primary', 'temperature'],
-    DEV_LOOP_LOOP_MAX_RETRY: ['loop', 'max_retry'],
-    DEV_LOOP_NOTIFICATIONS_DESKTOP_ENABLED: ['notifications', 'desktop', 'enabled'],
-    DEV_LOOP_UI_PORT: ['ui', 'port'],
-    DEV_LOOP_UI_HOST: ['ui', 'host'],
-  };
-
-  for (const [key, value] of Object.entries(process.env)) {
-    if (!key.startsWith('DEV_LOOP_') || value === undefined) continue;
-    const parts = envOverridePaths[key];
-    if (!parts) continue;
-
-    let obj: Record<string, unknown> = overrides;
-    for (let i = 0; i < parts.length - 1; i++) {
-      if (!obj[parts[i]] || typeof obj[parts[i]] !== 'object') {
-        obj[parts[i]] = {};
-      }
-      obj = obj[parts[i]] as Record<string, unknown>;
-    }
-    obj[parts[parts.length - 1]] = coerceEnvValue(value);
-  }
-
-  if (Object.keys(overrides).length > 0) {
-    const merged = mergeDefaults(config, overrides);
-    return ConfigSchema.parse(merged);
-  }
-
-  return config;
-}
-
-/** Merge user config values on top of defaults */
-export function mergeDefaults<T>(defaults: T, overrides: unknown): T {
-  if (!isPlainObject(overrides)) {
-    return overrides === undefined || overrides === null ? defaults : overrides as T;
-  }
-
-  const result: Record<string, unknown> = isPlainObject(defaults) ? { ...defaults } : {};
-  for (const [key, value] of Object.entries(overrides)) {
-    const current = result[key];
-    result[key] = isPlainObject(value) && isPlainObject(current)
-      ? mergeDefaults(current, value)
-      : value;
-  }
-
-  return result as T;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date);
-}
-
-function coerceEnvValue(value: string): string | number | boolean {
-  if (value === 'true') return true;
-  if (value === 'false') return false;
-  if (/^-?\d+$/.test(value)) return Number.parseInt(value, 10);
-  if (/^-?\d+\.\d+$/.test(value)) return Number.parseFloat(value);
-  return value;
+  throw new ConfigError(
+    'dev-loop.yaml failed validation.',
+    'Fix the reported config keys and run the command again.',
+    { issues: validated.error.errors },
+  );
 }
 
 /** Create a default dev-loop.yaml config file if it doesn't exist */
@@ -330,5 +259,5 @@ export async function saveConfig(
   const merged = mergeDefaults(base, updates);
   const validated = ConfigSchema.parse(merged);
 
-  fs.writeFileSync(configPath, YAML.stringify(validated), 'utf-8');
+  writeYamlFile(configPath, validated);
 }

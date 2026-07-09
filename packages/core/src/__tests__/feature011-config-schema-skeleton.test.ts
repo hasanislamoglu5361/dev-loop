@@ -53,7 +53,6 @@ describe('FEATURE011 - Config Schema Skeleton', () => {
   it('section schemas validate enum values independently', async () => {
     const { planningSectionSchema } = await import('../config/sections/planning-schema.js');
 
-    // @ts-expect-error invalid provider for type checking
     const result = planningSectionSchema.safeParse({ primary: { provider: 'invalid-provider' as any, model: 'm', api_key: 'k', temperature: 0.3, max_tokens: 100 } });
     expect(result.success).toBe(false);
     if (!result.success) {
@@ -64,7 +63,7 @@ describe('FEATURE011 - Config Schema Skeleton', () => {
 
   it('all section schemas parse {} without throwing', async () => {
     // Import all 17 section schemas
-    const sections = [
+    const sections: Array<Record<string, unknown>> = [
       await import('../config/sections/planning-schema.js'),
       await import('../config/sections/coding-schema.js'),
       await import('../config/sections/verifier-schema.js'),
@@ -86,11 +85,11 @@ describe('FEATURE011 - Config Schema Skeleton', () => {
 
     // All must parse {} successfully
     for (const mod of sections) {
-      const keys = Object.keys(mod).filter(k => k.endsWith('SectionSchema') || typeof (mod as any)[k] === 'object');
+      const keys = Object.keys(mod).filter(k => k.endsWith('SectionSchema') || typeof mod[k] === 'object');
       if (keys.length > 0) {
         // At least find the section schema export and parse it
         for (const key of keys) {
-          const schema = mod[key];
+          const schema = mod[key] as { parse: (value: unknown) => unknown };
           expect(() => schema.parse({})).not.toThrow();
         }
       } else {

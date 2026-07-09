@@ -4,6 +4,23 @@ import type { EventPayloadMap } from '../events.js';
 import { EventBus } from '../events.js';
 
 describe('FEATURE010 - Typed Event Bus', () => {
+  it('binds event names to payload types at compile time', () => {
+    const bus = new EventBus();
+
+    bus.emit('loop:start', { loopId: 'loop-1' });
+    bus.on('model:switch', payload => {
+      expect(payload.provider.toUpperCase()).toBe('OPENAI');
+      expect(payload.model.toUpperCase()).toBe('GPT-4');
+    });
+    bus.emit('model:switch', { provider: 'openai', model: 'gpt-4' });
+
+    // @ts-expect-error loop:start does not accept model payload
+    bus.emit('loop:start', { provider: 'openai', model: 'gpt-4' });
+
+    // @ts-expect-error notification level is restricted
+    bus.emit('notification', { level: 'debug', message: 'hello' });
+  });
+
   // ---- Event payload map has all required event names ----
 
   it('EventPayloadMap includes loop lifecycle events as keys', () => {

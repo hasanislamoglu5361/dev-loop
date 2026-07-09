@@ -1,26 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
-import path from 'node:path';
+import { runNpmScript } from './helpers/commands.js';
+import { readRootPackageJson } from './helpers/package-json.js';
+import { fromRoot } from './helpers/repo-paths.js';
 
 describe('FEATURE007 - ESLint and Formatting Foundation', () => {
-  const rootDir = path.resolve(__dirname, '../../../..');
-
-  function readJson(relPath: string): unknown {
-    return JSON.parse(fs.readFileSync(path.join(rootDir, relPath), 'utf8'));
-  }
-
   it('root package.json has a lint command in scripts', () => {
-    const pkg = readJson('package.json') as Record<string, unknown>;
+    const pkg = readRootPackageJson();
     const scripts = (pkg.scripts ?? {}) as Record<string, string>;
     expect(scripts.lint).toBeDefined();
   });
 
   it('ESLint flat config file exists at project root or in a package', () => {
     // Look for eslint.config.js, eslint.config.mjs, or .eslintrc.* files
-    const rootConfig = path.join(rootDir, 'eslint.config.js');
-    const rootMjs = path.join(rootDir, 'eslint.config.mjs');
-    const eslintrcJs = path.join(rootDir, '.eslintrc.js');
-    const eslintrcJson = path.join(rootDir, '.eslintrc.json');
+    const rootConfig = fromRoot('eslint.config.js');
+    const rootMjs = fromRoot('eslint.config.mjs');
+    const eslintrcJs = fromRoot('.eslintrc.js');
+    const eslintrcJson = fromRoot('.eslintrc.json');
 
     expect(
       fs.existsSync(rootConfig) ||
@@ -30,12 +26,8 @@ describe('FEATURE007 - ESLint and Formatting Foundation', () => {
     ).toBe(true);
   });
 
-  it('lint command runs without missing-config errors', async () => {
-    const { execSync } = await import('node:child_process');
-    const output = execSync('npm run lint', {
-      cwd: rootDir,
-      encoding: 'utf8',
-    });
+  it('lint command runs without missing-config errors', () => {
+    const output = runNpmScript('lint');
     expect(output).not.toContain('missing-config');
     expect(output).not.toContain('Cannot find config');
   });
@@ -43,9 +35,9 @@ describe('FEATURE007 - ESLint and Formatting Foundation', () => {
   it('ESLint config does not lint dist or generated files', () => {
     let eslintConfigContent = '';
     const candidates = [
-      path.join(rootDir, 'eslint.config.js'),
-      path.join(rootDir, '.eslintrc.js'),
-      path.join(rootDir, '.eslintrc.json'),
+      fromRoot('eslint.config.js'),
+      fromRoot('.eslintrc.js'),
+      fromRoot('.eslintrc.json'),
     ];
 
     for (const candidate of candidates) {
@@ -62,9 +54,9 @@ describe('FEATURE007 - ESLint and Formatting Foundation', () => {
   it('ESLint config includes TypeScript source files', () => {
     let eslintConfigContent = '';
     const candidates = [
-      path.join(rootDir, 'eslint.config.js'),
-      path.join(rootDir, '.eslintrc.js'),
-      path.join(rootDir, '.eslintrc.json'),
+      fromRoot('eslint.config.js'),
+      fromRoot('.eslintrc.js'),
+      fromRoot('.eslintrc.json'),
     ];
 
     for (const candidate of candidates) {
@@ -80,10 +72,10 @@ describe('FEATURE007 - ESLint and Formatting Foundation', () => {
 
   it('Prettier config exists or is referenced in ESLint config', () => {
     const prettierConfigs = [
-      path.join(rootDir, '.prettierrc'),
-      path.join(rootDir, '.prettierrc.js'),
-      path.join(rootDir, '.prettierrc.json'),
-      path.join(rootDir, '.prettierignore'),
+      fromRoot('.prettierrc'),
+      fromRoot('.prettierrc.js'),
+      fromRoot('.prettierrc.json'),
+      fromRoot('.prettierignore'),
     ];
 
     const prettierPresent = prettierConfigs.some(p => fs.existsSync(p));
@@ -91,9 +83,9 @@ describe('FEATURE007 - ESLint and Formatting Foundation', () => {
     // If no prettier config, check if eslint extends prettier or has formatting rules
     let eslintConfigContent = '';
     for (const candidate of [
-      path.join(rootDir, 'eslint.config.js'),
-      path.join(rootDir, '.eslintrc.js'),
-      path.join(rootDir, '.eslintrc.json'),
+      fromRoot('eslint.config.js'),
+      fromRoot('.eslintrc.js'),
+      fromRoot('.eslintrc.json'),
     ]) {
       if (fs.existsSync(candidate)) {
         eslintConfigContent = fs.readFileSync(candidate, 'utf8');

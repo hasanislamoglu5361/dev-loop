@@ -23,45 +23,41 @@ export interface EventPayloadMap {
 }
 
 export type EventName = keyof EventPayloadMap;
-export type Listener<T extends EventPayloadMap[keyof EventPayloadMap]> = (payload: T) => void;
+export type Listener<Name extends EventName> = (payload: EventPayloadMap[Name]) => void;
 
 /**
  * Typed event bus with isolated instances.
  * Listeners are removed via off() or the unsubscribe function returned by on().
  */
 export class EventBus {
-  private listeners = new Map<EventName, Set<Listener<any>>>();
+  private listeners: {
+    [Name in EventName]?: Set<Listener<Name>>;
+  } = {};
 
   /**
    * Subscribe to an event. Returns a function that removes the listener when called.
    */
-  on<T extends EventPayloadMap[keyof EventPayloadMap]>(name: EventName, listener: Listener<T>): () => void {
-    if (!this.listeners.has(name)) {
-      this.listeners.set(name, new Set());
-    }
-    const set = this.listeners.get(name)!;
-    set.add(listener as Listener<any>);
+  on<Name extends EventName>(name: Name, listener: Listener<Name>): () => void {
+    const set = this.getListenerSet(name);
+    set.add(listener);
 
     return () => {
-      this.off(name, listener as Listener<any>);
+      this.off(name, listener);
     };
   }
 
   /**
    * Remove a specific listener for an event.
    */
-  off<T extends EventPayloadMap[keyof EventPayloadMap]>(name: EventName, listener: Listener<T>): void {
-    const set = this.listeners.get(name);
-    if (set) {
-      set.delete(listener as Listener<any>);
-    }
+  off<Name extends EventName>(name: Name, listener: Listener<Name>): void {
+    this.listeners[name]?.delete(listener);
   }
 
   /**
    * Emit an event with the given payload. All listeners for the event name are called synchronously.
    */
-  emit<T extends EventPayloadMap[keyof EventPayloadMap]>(name: EventName, payload: T): void {
-    const set = this.listeners.get(name);
+  emit<Name extends EventName>(name: Name, payload: EventPayloadMap[Name]): void {
+    const set = this.listeners[name] as Set<Listener<Name>> | undefined;
     if (set) {
       for (const listener of set) {
         listener(payload);
@@ -72,11 +68,17 @@ export class EventBus {
   /**
    * Remove all listeners for an event.
    */
-  removeAllListeners(name?: EventName): void {
+  removeAllListeners<Name extends EventName>(name?: Name): void {
     if (name !== undefined) {
-      this.listeners.delete(name);
+      delete this.listeners[name];
     } else {
-      this.listeners.clear();
+      this.listeners = {};
     }
+  }
+
+  private getListenerSet<Name extends EventName>(name: Name): Set<Listener<Name>> {
+    const listeners = this.listeners as Record<string, Set<Listener<Name>> | undefined>;
+    listeners[name] ??= new Set<Listener<Name>>();
+    return listeners[name];
   }
 }

@@ -1,12 +1,44 @@
-export * from './config/defaults.js';
-export * from './config/loader.js';
-export * from './config/schema.js';
-export * from './db/connection.js';
-export { runMigrations } from './db/migrations.js';
-export * from './db/queries.js';
-export * from './db/schema.js';
-export * from './utils/cost-calculator.js';
-export * from './utils/file-system.js';
-export * from './utils/token-counter.js';
-export * from './types.js';
-export { DevLoopError, ConfigError, DatabaseError, ModelError, VerifierError, PlanningError, MigrationAbortedError } from './errors.js';
+export {
+  loadConfig,
+  saveConfig,
+  createDefaultConfig,
+  applyEnvOverrides,
+  mergeDefaults,
+} from './config/loader.js';
+export type { ConfigWarning, LoadConfigOptions } from './config/loader.js';
+export type { DevLoopConfig } from './config/schema.js';
+
+export {
+  DevLoopError,
+  ConfigError,
+  DatabaseError,
+  ModelError,
+  VerifierError,
+  PlanningError,
+  MigrationAbortedError,
+} from './errors.js';
+
+export { EventBus } from './events.js';
+export type { EventName, EventPayloadMap, Listener } from './events.js';
+
+export type {
+  LoopId,
+  StepId,
+  LoopStep,
+  LoopDef,
+  ModelProvider,
+  ModelRef,
+  ModelConfig,
+  VerifierConfig,
+  MCPServerConfig,
+  QualityGate,
+  PlanningConfig,
+  NotificationConfig,
+  GeneratedFile,
+  LoopResult,
+} from './types.js';
+
+export {
+  countTokens,
+  countChatTokens,
+} from './utils/token-counter.js';
