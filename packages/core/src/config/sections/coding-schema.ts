@@ -3,8 +3,6 @@
 
 import { z } from 'zod';
 
-const autoSelectDefaults = { enabled: true, prefer_local: true, prefer_cheapest: true, prefer_fastest: true, max_cost_per_1k_tokens: 0.002, auto_switch_on_repeated_failure: true, failure_threshold: 2, notify_on_switch: true, auto_confirm_switch: false };
-
 export const codingSectionSchema = z.object({
   primary: z.object({
     provider: z.enum(['auto', 'openrouter', 'lmstudio', 'ollama', 'openai', 'anthropic']).default('auto'),

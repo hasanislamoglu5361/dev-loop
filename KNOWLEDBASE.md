@@ -2587,3 +2587,95 @@ Observed result:
 Important cleanup note:
 
 - After build, always run the generated-file find command. If generated files appear under `src`, remove them and clean the matching `tsconfig.tsbuildinfo` before rebuilding.
+
+## BUG030-BUG033 Batch: FEATURE007/FEATURE005/FEATURE011 Review Fixes
+
+Date: 2026-07-09
+
+Scope:
+
+- `BUGS/BUG030-feature007-ad-hoc-hardcoded-test.md`
+- `BUGS/BUG031-feature005-build-pipeline-currently-fails.md`
+- `BUGS/BUG032-feature011-schema-skeleton-review-is-incomplete.md`
+- `BUGS/BUG033-review-feature-audit-summary-2026-07-09.md`
+
+What changed:
+
+- Removed the ad-hoc `packages/feature007/test.test.ts` file and deleted the now-empty `packages/feature007` directory.
+- Replaced the monolithic `packages/core/src/config/schema.ts` body with a composed `ConfigSchema` that imports all section schemas from `packages/core/src/config/sections/`.
+- Added `packages/core/src/config/sections/observability-schema.ts` because the public config included `observability`, but the extracted section schema set did not.
+- Strengthened `packages/core/src/__tests__/feature011-config-schema-skeleton.test.ts` so it verifies all section schemas parse defaults, includes `observability`, and asserts the public `schema.ts` imports every expected section file.
+- Removed unused constants from `coding-schema.ts`, `mcp-schema.ts`, and `quality-gate-schema.ts`; they were not functional bugs, but they were noise in the lint output touched by this batch.
+- Updated `BUGS/README.md` so the active bug map no longer points at the deleted BUG030 prompt.
+
+Why:
+
+- BUG030 was valid because `packages/feature007` was outside the declared workspaces and added duplicate, package-shaped test surface for FEATURE007. The real lint foundation proof belongs under the existing core test suite.
+- BUG031 depended on FEATURE011 because the build-pipeline verification runs TypeScript compilation; if config schema tests fail to compile, FEATURE005 cannot be considered proven.
+- BUG032 was the core production issue: section schema files existed, but the public `ConfigSchema` still duplicated the full object inline. That meant the extracted files could drift and production code would not notice.
+- BUG033 was an audit summary of the same chain: no review artifact should be moved or trusted until `npm test`, `npm run typecheck`, `npm run build`, and `npm run lint` all match the claimed state.
+
+How:
+
+- `schema.ts` now keeps `version` locally and delegates each config section to its named section schema:
+  - `planning: planningSectionSchema`
+  - `coding: codingSectionSchema`
+  - `verifier: verifierSectionSchema`
+  - `fallback: fallbackSectionSchema`
+  - `loop: loopSectionSchema`
+  - `test_runner: testRunnerSectionSchema`
+  - `quality_gate: qualityGateSectionSchema`
+  - `mcp: mcpSectionSchema`
+  - `context: contextSectionSchema`
+  - `learning: learningSectionSchema`
+  - `benchmark: benchmarkSectionSchema`
+  - `notifications: notificationsSectionSchema`
+  - `integrations: integrationsSectionSchema`
+  - `git: gitSectionSchema`
+  - `agents: agentsSectionSchema`
+  - `ui: uiSectionSchema`
+  - `voice: voiceSectionSchema`
+  - `observability: observabilitySectionSchema`
+- `observabilitySectionSchema` mirrors the previous inline defaults:
+  - `anomaly_detection: true`
+  - `sla_minutes: 0`
+  - `trend_analysis: true`
+  - `export_formats: ['csv', 'pdf', 'json']`
+  - `natural_language_queries: true`
+- The FEATURE011 regression test intentionally checks source imports. This is acceptable here because the bug was structural: a behavior-only default parse test could pass even when production code still ignored the section files.
+- The invalid enum tests no longer need `as any`; `safeParse` accepts unknown input, so runtime invalid values can be tested without weakening TypeScript.
+- Dynamic section module access is narrowed to exports ending with `SectionSchema`, then cast only to the small `parse(input: unknown): unknown` surface needed by the test.
+
+Verification:
+
+```bash
+npm test -- packages/core/src/__tests__/feature011-config-schema-skeleton.test.ts
+npm test -- packages/core/src/__tests__/feature007-loop-structure.test.ts
+npm test -- packages/core/src/__tests__/feature005-build-pipeline.test.ts
+cd packages/core && npx tsc -p tsconfig.json --pretty false
+npm test
+npm run typecheck
+npm run lint
+npm run build
+```
+
+Observed result:
+
+- FEATURE011 targeted test: 7 tests passed.
+- FEATURE007 targeted test: 6 tests passed.
+- FEATURE005 targeted test: 10 tests passed.
+- Direct `packages/core` TypeScript compile: passed.
+- Full `npm test`: 29 files, 138 tests passed.
+- `npm run typecheck`: passed.
+- `npm run build`: passed with cache misses for core, cli, and ui.
+- `npm run lint`: exit 0 with 10 existing warnings.
+
+Future local-model rules:
+
+- Do not create new `packages/*` directories unless they are declared workspaces or explicitly requested.
+- Feature tests for repository behavior should live in the existing test structure, not in ad-hoc package-like folders.
+- When a feature says "extract" or "compose", production entry points must import and use the extracted modules; duplicate files are not completion.
+- If a Zod schema is split into sections, every public config key needs exactly one section source of truth.
+- For TypeScript tests, avoid `as any` unless the test is specifically about unsafe values; `safeParse` already accepts `unknown`.
+- Run direct `tsc` or `npm run typecheck` after changing tests, not only Vitest.
+- Treat review/audit bug files as stale until the exact acceptance commands have been re-run in the current checkout.

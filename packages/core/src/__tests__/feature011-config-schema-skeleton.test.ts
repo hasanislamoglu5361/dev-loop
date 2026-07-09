@@ -3,6 +3,8 @@
 // Verifies that section schemas exist as separate imports AND the composed ConfigSchema still works
 
 import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import { fromRoot } from './helpers/repo-paths.js';
 
 describe('FEATURE011 - Config Schema Skeleton', () => {
   it('parses an empty config into a complete valid config via composed schema', async () => {
@@ -16,7 +18,7 @@ describe('FEATURE011 - Config Schema Skeleton', () => {
 
   it('rejects invalid provider enum with path information', async () => {
     const { ConfigSchema } = await import('../config/schema.js');
-    const result = ConfigSchema.safeParse({ planning: { primary: { provider: 'bad' as any, model: 'x', api_key: 'k', temperature: 0.3, max_tokens: 100 }, auto_select: false, scoring: true } });
+    const result = ConfigSchema.safeParse({ planning: { primary: { provider: 'bad', model: 'x', api_key: 'k', temperature: 0.3, max_tokens: 100 }, auto_select: false, scoring: true } });
     expect(result.success).toBe(false);
     if (!result.success) {
       const paths = result.error.issues.map(i => i.path.join('.'));
@@ -53,7 +55,7 @@ describe('FEATURE011 - Config Schema Skeleton', () => {
   it('section schemas validate enum values independently', async () => {
     const { planningSectionSchema } = await import('../config/sections/planning-schema.js');
 
-    const result = planningSectionSchema.safeParse({ primary: { provider: 'invalid-provider' as any, model: 'm', api_key: 'k', temperature: 0.3, max_tokens: 100 } });
+    const result = planningSectionSchema.safeParse({ primary: { provider: 'invalid-provider', model: 'm', api_key: 'k', temperature: 0.3, max_tokens: 100 } });
     expect(result.success).toBe(false);
     if (!result.success) {
       const paths = result.error.issues.map(i => i.path.join('.'));
@@ -81,15 +83,16 @@ describe('FEATURE011 - Config Schema Skeleton', () => {
       await import('../config/sections/agents-schema.js'),
       await import('../config/sections/ui-schema.js'),
       await import('../config/sections/voice-schema.js'),
+      await import('../config/sections/observability-schema.js'),
     ];
 
     // All must parse {} successfully
     for (const mod of sections) {
-      const keys = Object.keys(mod).filter(k => k.endsWith('SectionSchema') || typeof mod[k] === 'object');
+      const keys = Object.keys(mod).filter(k => k.endsWith('SectionSchema'));
       if (keys.length > 0) {
         // At least find the section schema export and parse it
         for (const key of keys) {
-          const schema = mod[key] as { parse: (value: unknown) => unknown };
+          const schema = mod[key] as { parse(input: unknown): unknown };
           expect(() => schema.parse({})).not.toThrow();
         }
       } else {
@@ -110,5 +113,33 @@ describe('FEATURE011 - Config Schema Skeleton', () => {
 
     expect(composedEmpty.planning.primary.provider).toBe(planningSectionSchema.parse({}).primary.provider);
     expect(composedEmpty.loop.max_retry).toBe(loopSectionSchema.parse({}).max_retry);
+  });
+
+  it('public ConfigSchema imports all extracted section schemas', () => {
+    const source = fs.readFileSync(fromRoot('packages/core/src/config/schema.ts'), 'utf8');
+    const expectedImports = [
+      'agents-schema',
+      'benchmark-schema',
+      'coding-schema',
+      'context-schema',
+      'fallback-schema',
+      'git-schema',
+      'integrations-schema',
+      'learning-schema',
+      'loop-schema',
+      'mcp-schema',
+      'notifications-schema',
+      'observability-schema',
+      'planning-schema',
+      'quality-gate-schema',
+      'test-runner-schema',
+      'ui-schema',
+      'verifier-schema',
+      'voice-schema',
+    ];
+
+    for (const expectedImport of expectedImports) {
+      expect(source).toContain(`./sections/${expectedImport}.js`);
+    }
   });
 });

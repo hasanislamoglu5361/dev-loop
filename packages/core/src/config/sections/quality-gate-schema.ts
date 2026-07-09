@@ -2,8 +2,6 @@
 
 import { z } from 'zod';
 
-const checksDefaults = { test_coverage_min: 80, complexity_max: 10, secrets: true, vulnerabilities: true, mcp_score_min: 0, uncertain_tags: true, lint: true, type_coverage_min: 0 };
-
 export const qualityGateSectionSchema = z.object({
   enabled: z.boolean().default(true),
   block_commit_on_failure: z.boolean().default(true),

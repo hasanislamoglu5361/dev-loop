@@ -2,8 +2,6 @@
 
 import { z } from 'zod';
 
-const serverDefaults = { auto_enable: false };
-
 export const mcpSectionSchema = z.object({
   enabled: z.boolean().default(true),
   injection_detection: z.boolean().default(true),
