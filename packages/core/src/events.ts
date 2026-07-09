@@ -66,6 +66,17 @@ export class EventBus {
   }
 
   /**
+   * Subscribe once to an event. The listener is called exactly once and then removed automatically.
+   */
+  once<Name extends EventName>(name: Name, listener: Listener<Name>): void {
+    const wrapped = (payload: EventPayloadMap[Name]) => {
+      this.off(name, wrapped);
+      listener(payload);
+    };
+    this.on(name, wrapped);
+  }
+
+  /**
    * Remove all listeners for an event.
    */
   removeAllListeners<Name extends EventName>(name?: Name): void {

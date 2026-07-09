@@ -2807,3 +2807,9 @@ Future local-model rules:
 - Add `files` whitelists for packages whose runtime entry points live in ignored directories like `dist`.
 - Test tarball contents with `npm pack --dry-run --json`; parse lifecycle-log-prefixed output carefully.
 - Keep lint output warning-free before increasing lint strictness. A quiet lint command is easier for local models to reason about than "green with warnings."
+
+FEATURE009 review lesson:
+
+- For custom TypeScript `Error` subclasses, never force `Object.setPrototypeOf(this, DevLoopError.prototype)` in the base constructor. Use `Object.setPrototypeOf(this, new.target.prototype)` so `new ConfigError(...) instanceof ConfigError` remains true.
+- A "safe to log" error API must test redaction of nested `details` keys such as `apiKey`, `token`, `password`, `secret`, and `authorization`. Checking only that `stack` is absent is a false positive.
+- If a feature requires `code`, `action`, `details`, and `cause`, assert those fields on every exported subclass, including `DatabaseError`, not just on the base class.
