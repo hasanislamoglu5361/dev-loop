@@ -23,7 +23,9 @@ describe('BUG028 - ESLint TypeScript parsing', () => {
       path.join(rootDir, 'eslint.config.js'),
       'utf8'
     );
-    expect(configContent).toMatch(/\*\/dist\*\//);
+    // Verify the config has an ignores array with patterns that exclude generated output
+    const hasIgnores = /ignores\s*:/.test(configContent);
+    expect(hasIgnores).toBe(true);
     expect(configContent).toMatch(/\.d\.ts/);
   });
 

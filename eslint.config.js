@@ -45,15 +45,10 @@ export default [
     },
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
-      // Allow unused vars (legacy code pattern) — warn only
-      'no-unused-vars': ['warn'],
+      // Disable base no-unused-vars for .ts — @typescript-eslint handles this correctly
+      'no-unused-vars': 'off',
       '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
       'no-undef': 'off',
     },
-  },
-
-  // Test files config (already covered by above)
-  {
-    files: ['**/*.test.ts'],
   },
 ];
