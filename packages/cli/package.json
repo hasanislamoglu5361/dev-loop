@@ -1,0 +1,30 @@
+{
+  "name": "@dev-loop/cli",
+  "version": "0.1.0",
+  "description": "Command line interface for dev-loop",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "dev-loop": "./dist/main.js"
+  },
+  "main": "./dist/main.js",
+  "types": "./dist/main.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/main.d.ts",
+      "import": "./dist/main.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@dev-loop/core": "0.1.0",
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^5.4.0"
+  }
+}

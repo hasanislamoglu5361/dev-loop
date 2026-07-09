@@ -1,0 +1,58 @@
+{
+  "name": "dev-loop",
+  "version": "0.1.0",
+  "description": "AI-powered development loop automation — write what you want, dev-loop builds it",
+  "license": "MIT",
+  "homepage": "https://github.com/your-org/dev-loop",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/dev-loop"
+  },
+  "bugs": {
+    "url": "https://github.com/your-org/dev-loop/issues"
+  },
+  "keywords": [
+    "ai",
+    "automation",
+    "developer-tools",
+    "llm",
+    "code-generation",
+    "cli"
+  ],
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
+  "type": "module",
+  "packageManager": "npm@11.9.0",
+  "workspaces": [
+    "packages/cli",
+    "packages/core",
+    "packages/ui"
+  ],
+  "scripts": {
+    "build": "turbo build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint packages/*/src --ext .ts,.tsx",
+    "typecheck": "tsc --noEmit -p tsconfig.base.json",
+    "format": "prettier --write packages/*/src",
+    "clean": "turbo clean",
+    "release": "changeset publish",
+    "prepare": "husky install"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.27.0",
+    "@types/node": "^26.1.1",
+    "@vitest/coverage-v8": "^1.6.0",
+    "eslint": "^9.0.0",
+    "husky": "^9.0.0",
+    "lint-staged": "^15.0.0",
+    "prettier": "^3.0.0",
+    "turbo": "^2.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0",
+    "yaml": "^2.9.0"
+  }
+}
