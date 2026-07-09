@@ -11,6 +11,12 @@ describe('@dev-loop/core public API', () => {
       EventBus: expect.any(Function),
       DevLoopError: expect.any(Function),
       countTokens: expect.any(Function),
+      buildProjectRuntimePaths: expect.any(Function),
+      initProjectRuntime: expect.any(Function),
+      mergeGitignore: expect.any(Function),
+      mergeVSCodeSettings: expect.any(Function),
+      checkConfigFile: expect.any(Function),
+      safeParseWithMessage: expect.any(Function),
     }));
   });
 

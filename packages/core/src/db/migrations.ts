@@ -5,9 +5,16 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const migrations = [
+/** A single migration with an explicit, immutable identity. */
+export interface Migration {
+  version: number;
+  name: string;
+  up: (db: Database.Database) => void;
+}
+
+const migrations: readonly Migration[] = [
   { version: 1, name: '001_initial_schema', up: applyMigration1 },
-] as const;
+];
 
 /** Run all pending migrations against the database */
 export function runMigrations(dbOrPath: string | Database.Database): void {
@@ -23,21 +30,31 @@ export function runMigrations(dbOrPath: string | Database.Database): void {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
 
-  ensureMigrationTable(db);
-
   try {
-    for (const migration of migrations) {
-      if (isMigrationApplied(db, migration.version, migration.name)) continue;
-
-      db.transaction(() => {
-        migration.up(db);
-        markMigrationApplied(db, migration.version, migration.name);
-      })();
-    }
+    applyMigrationSet(db, migrations);
   } finally {
     if (ownsConnection) {
       db.close();
     }
+  }
+}
+
+/**
+ * Apply a set of migrations against an already-open connection, in order,
+ * skipping any migration already recorded in `_migrations`. Each migration
+ * runs inside its own transaction, so a failure rolls back only that
+ * migration's changes and leaves it unrecorded.
+ */
+export function applyMigrationSet(db: Database.Database, migrationList: readonly Migration[]): void {
+  ensureMigrationTable(db);
+
+  for (const migration of migrationList) {
+    if (isMigrationApplied(db, migration.version, migration.name)) continue;
+
+    db.transaction(() => {
+      migration.up(db);
+      markMigrationApplied(db, migration.version, migration.name);
+    })();
   }
 }
 
@@ -246,19 +263,16 @@ function applyMigration1(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_loop_history_success ON loop_history(success);
     CREATE INDEX IF NOT EXISTS idx_error_patterns_model ON error_patterns(model);
     CREATE INDEX IF NOT EXISTS idx_error_patterns_hash ON error_patterns(pattern_hash);
+    CREATE INDEX IF NOT EXISTS idx_model_profiles_lookup ON model_profiles(model, provider, feature_type, language, hour_of_day);
     CREATE INDEX IF NOT EXISTS idx_mcp_usage_loop ON mcp_usage(loop_id);
     CREATE INDEX IF NOT EXISTS idx_mcp_errors_loop ON mcp_errors(loop_id);
     CREATE INDEX IF NOT EXISTS idx_benchmark_id ON benchmark_results(benchmark_id);
     CREATE INDEX IF NOT EXISTS idx_quality_loop ON quality_history(loop_id);
     CREATE INDEX IF NOT EXISTS idx_uncertain_loop ON uncertain_tags(loop_id);
     CREATE INDEX IF NOT EXISTS idx_uncertain_resolved ON uncertain_tags(resolved);
-    CREATE INDEX IF NOT EXISTS idx_tickets_provider ON tickets(provider, ticket_id)
+    CREATE INDEX IF NOT EXISTS idx_tickets_provider ON tickets(provider, ticket_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_provider_ticket_unique ON tickets(provider, ticket_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_flaky_tests_test_name_unique ON flaky_tests(test_name);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_golden_files_file_path_unique ON golden_files(file_path)
   `);
-}
-
-/** Initialize database and run migrations */
-export function initDatabase(dbPath: string): Database.Database {
-  const absPath = path.resolve(dbPath);
-  runMigrations(absPath);
-  return new Database(absPath);
 }

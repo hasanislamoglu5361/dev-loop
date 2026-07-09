@@ -8,6 +8,30 @@ export interface SerializedDevLoopError {
   details?: Record<string, unknown>;
 }
 
+/** Key names that must never appear unredacted in a serialized error. */
+const SECRET_KEY_PATTERN = /api[-_]?key|token|password|secret|authorization/i;
+
+/** Recursively redact secret-like keys from a details value before serialization. */
+function redactValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(redactValue);
+  }
+
+  if (value && typeof value === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      result[key] = SECRET_KEY_PATTERN.test(key) ? '[REDACTED]' : redactValue(nested);
+    }
+    return result;
+  }
+
+  return value;
+}
+
+function redactDetails(details: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  return details ? (redactValue(details) as Record<string, unknown>) : details;
+}
+
 /**
  * Base error class for all DevLoop errors.
  * Extends native Error to preserve stack traces and instanceof checks.
@@ -32,8 +56,8 @@ export class DevLoopError extends Error {
     this.details = details ?? undefined;
     this.cause = cause;
 
-    // Restore prototype chain for proper instanceof checks with custom classes
-    Object.setPrototypeOf(this, DevLoopError.prototype);
+    // Restore prototype chain for proper instanceof checks with subclasses.
+    Object.setPrototypeOf(this, new.target.prototype);
   }
 
   /**
@@ -43,7 +67,7 @@ export class DevLoopError extends Error {
     const json: SerializedDevLoopError = { message: this.message };
     if (this.code) json.code = this.code;
     if (this.action !== undefined) json.action = this.action;
-    if (this.details && Object.keys(this.details).length > 0) json.details = this.details;
+    if (this.details && Object.keys(this.details).length > 0) json.details = redactDetails(this.details);
     return json;
   }
 
@@ -69,9 +93,8 @@ export class ConfigError extends DevLoopError {
  * Thrown when database operations fail.
  */
 export class DatabaseError extends DevLoopError {
-  constructor(message: string, cause?: Error) {
-    super(message, 'database.error');
-    this.cause = cause;
+  constructor(message: string, action?: string, details?: Record<string, unknown>, cause?: Error) {
+    super(message, 'database.error', action, details, cause);
     this.name = 'DatabaseError';
   }
 }

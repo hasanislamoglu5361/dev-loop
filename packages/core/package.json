@@ -44,6 +44,7 @@
     "openai": "^4.70.0",
     "simple-git": "^3.25.0",
     "tiktoken": "^1.0.0",
+    "yaml": "^2.9.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {

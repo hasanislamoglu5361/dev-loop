@@ -2,7 +2,7 @@
 // Drizzle ORM schema definition for dev-loop SQLite database.
 
 import { sql } from 'drizzle-orm';
-import { integer, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { index, integer, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 const createdAt = () => text('created_at').notNull().default(sql`(datetime('now'))`);
 
@@ -37,11 +37,17 @@ export const loopHistory = sqliteTable('loop_history', {
   planningLoopId: integer('planning_loop_id'),
   createdAt: createdAt(),
   completedAt: text('completed_at'),
+}, table => {
+  return {
+    createdAtIdx: index('idx_loop_history_created').on(table.createdAt),
+    primaryModelIdx: index('idx_loop_history_model').on(table.primaryModel),
+    successIdx: index('idx_loop_history_success').on(table.success),
+  };
 });
 
 export const loopTurns = sqliteTable('loop_turns', {
   id: integer('id').primaryKey({ autoIncrement: true }),
-  loopId: integer('loop_id').notNull(),
+  loopId: integer('loop_id').notNull().references(() => loopHistory.id),
   turnNumber: integer('turn_number').notNull(),
   agent: text('agent').notNull(),
   model: text('model'),
@@ -78,6 +84,11 @@ export const errorPatterns = sqliteTable('error_patterns', {
   lastUpdated: text('last_updated'),
   autoInject: integer('auto_inject').default(1),
   conflictingPatternId: integer('conflicting_pattern_id'),
+}, table => {
+  return {
+    patternHashIdx: index('idx_error_patterns_hash').on(table.patternHash),
+    modelIdx: index('idx_error_patterns_model').on(table.model),
+  };
 });
 
 export const successPatterns = sqliteTable('success_patterns', {
@@ -111,11 +122,21 @@ export const modelProfiles = sqliteTable('model_profiles', {
   avgTokensPerSecond: real('avg_tokens_per_second'),
   totalLoops: integer('total_loops').default(0),
   lastUpdated: text('last_updated').notNull().default(sql`(datetime('now'))`),
+}, table => {
+  return {
+    lookupIdx: index('idx_model_profiles_lookup').on(
+      table.model,
+      table.provider,
+      table.featureType,
+      table.language,
+      table.hourOfDay,
+    ),
+  };
 });
 
 export const mcpUsage = sqliteTable('mcp_usage', {
   id: integer('id').primaryKey({ autoIncrement: true }),
-  loopId: integer('loop_id').notNull(),
+  loopId: integer('loop_id').notNull().references(() => loopHistory.id),
   turnId: integer('turn_id'),
   model: text('model'),
   mcpServer: text('mcp_server').notNull(),
@@ -131,7 +152,7 @@ export const mcpUsage = sqliteTable('mcp_usage', {
 
 export const mcpErrors = sqliteTable('mcp_errors', {
   id: integer('id').primaryKey({ autoIncrement: true }),
-  loopId: integer('loop_id').notNull(),
+  loopId: integer('loop_id').notNull().references(() => loopHistory.id),
   turnId: integer('turn_id'),
   model: text('model'),
   mcpServer: text('mcp_server').notNull(),
@@ -145,7 +166,7 @@ export const mcpErrors = sqliteTable('mcp_errors', {
 
 export const mcpScores = sqliteTable('mcp_scores', {
   id: integer('id').primaryKey({ autoIncrement: true }),
-  loopId: integer('loop_id').notNull(),
+  loopId: integer('loop_id').notNull().references(() => loopHistory.id),
   model: text('model'),
   shouldHaveUsed: text('should_have_used'),
   correctlyUsed: text('correctly_used'),
@@ -181,7 +202,7 @@ export const benchmarkResults = sqliteTable('benchmark_results', {
 
 export const qualityHistory = sqliteTable('quality_history', {
   id: integer('id').primaryKey({ autoIncrement: true }),
-  loopId: integer('loop_id').notNull(),
+  loopId: integer('loop_id').notNull().references(() => loopHistory.id),
   commitHash: text('commit_hash'),
   testCoveragePct: real('test_coverage_pct'),
   complexityScore: real('complexity_score'),
@@ -200,7 +221,7 @@ export const qualityHistory = sqliteTable('quality_history', {
 
 export const uncertainTags = sqliteTable('uncertain_tags', {
   id: integer('id').primaryKey({ autoIncrement: true }),
-  loopId: integer('loop_id').notNull(),
+  loopId: integer('loop_id').notNull().references(() => loopHistory.id),
   filePath: text('file_path').notNull(),
   lineNumber: integer('line_number'),
   codeSnippet: text('code_snippet'),
@@ -233,7 +254,7 @@ export const notificationLog = sqliteTable('notification_log', {
   channel: text('channel').notNull(),
   eventType: text('event_type').notNull(),
   message: text('message'),
-  loopId: integer('loop_id'),
+  loopId: integer('loop_id').references(() => loopHistory.id),
   sent: integer('sent').default(0),
   errorMessage: text('error_message'),
   createdAt: createdAt(),
@@ -252,6 +273,10 @@ export const tickets = sqliteTable('tickets', {
   injectionDetected: integer('injection_detected').default(0),
   lastSynced: text('last_synced'),
   createdAt: createdAt(),
+}, table => {
+  return {
+    providerTicketUniqueIdx: uniqueIndex('idx_tickets_provider_ticket_unique').on(table.provider, table.ticketId),
+  };
 });
 
 export const auditLog = sqliteTable('audit_log', {
@@ -299,7 +324,7 @@ export const dbQueryAnalysis = sqliteTable('db_query_analysis', {
 
 export const userRatings = sqliteTable('user_ratings', {
   id: integer('id').primaryKey({ autoIncrement: true }),
-  loopId: integer('loop_id').notNull(),
+  loopId: integer('loop_id').notNull().references(() => loopHistory.id),
   rating: integer('rating').notNull(),
   comment: text('comment'),
   falsePositive: integer('false_positive').default(0),
@@ -317,6 +342,10 @@ export const flakyTests = sqliteTable('flaky_tests', {
   lastSeen: text('last_seen').notNull().default(sql`(datetime('now'))`),
   resolved: integer('resolved').default(0),
   resolvedAt: text('resolved_at'),
+}, table => {
+  return {
+    testNameUniqueIdx: uniqueIndex('idx_flaky_tests_test_name_unique').on(table.testName),
+  };
 });
 
 export const goldenFiles = sqliteTable('golden_files', {
@@ -325,6 +354,10 @@ export const goldenFiles = sqliteTable('golden_files', {
   contentHash: text('content_hash').notNull(),
   lastVerified: text('last_verified'),
   createdAt: createdAt(),
+}, table => {
+  return {
+    filePathUniqueIdx: uniqueIndex('idx_golden_files_file_path_unique').on(table.filePath),
+  };
 });
 
 export const agentCommunication = sqliteTable('agent_communication', {
@@ -362,7 +395,48 @@ export const schema = {
   agentCommunication,
 };
 
-export type LoopRecord = typeof loopHistory.$inferSelect;
-export type NewLoopRecord = typeof loopHistory.$inferInsert;
+export type LoopHistory = typeof loopHistory.$inferSelect;
+export type NewLoopHistory = typeof loopHistory.$inferInsert;
 export type LoopTurn = typeof loopTurns.$inferSelect;
 export type NewLoopTurn = typeof loopTurns.$inferInsert;
+export type ErrorPattern = typeof errorPatterns.$inferSelect;
+export type NewErrorPattern = typeof errorPatterns.$inferInsert;
+export type SuccessPattern = typeof successPatterns.$inferSelect;
+export type NewSuccessPattern = typeof successPatterns.$inferInsert;
+export type ModelProfile = typeof modelProfiles.$inferSelect;
+export type NewModelProfile = typeof modelProfiles.$inferInsert;
+export type McpUsage = typeof mcpUsage.$inferSelect;
+export type NewMcpUsage = typeof mcpUsage.$inferInsert;
+export type McpError = typeof mcpErrors.$inferSelect;
+export type NewMcpError = typeof mcpErrors.$inferInsert;
+export type McpScore = typeof mcpScores.$inferSelect;
+export type NewMcpScore = typeof mcpScores.$inferInsert;
+export type BenchmarkResult = typeof benchmarkResults.$inferSelect;
+export type NewBenchmarkResult = typeof benchmarkResults.$inferInsert;
+export type QualityHistory = typeof qualityHistory.$inferSelect;
+export type NewQualityHistory = typeof qualityHistory.$inferInsert;
+export type UncertainTag = typeof uncertainTags.$inferSelect;
+export type NewUncertainTag = typeof uncertainTags.$inferInsert;
+export type PromptVersion = typeof promptVersions.$inferSelect;
+export type NewPromptVersion = typeof promptVersions.$inferInsert;
+export type NotificationLog = typeof notificationLog.$inferSelect;
+export type NewNotificationLog = typeof notificationLog.$inferInsert;
+export type Ticket = typeof tickets.$inferSelect;
+export type NewTicket = typeof tickets.$inferInsert;
+export type AuditLog = typeof auditLog.$inferSelect;
+export type NewAuditLog = typeof auditLog.$inferInsert;
+export type PlanningHistory = typeof planningHistory.$inferSelect;
+export type NewPlanningHistory = typeof planningHistory.$inferInsert;
+export type DbQueryAnalysis = typeof dbQueryAnalysis.$inferSelect;
+export type NewDbQueryAnalysis = typeof dbQueryAnalysis.$inferInsert;
+export type UserRating = typeof userRatings.$inferSelect;
+export type NewUserRating = typeof userRatings.$inferInsert;
+export type FlakyTest = typeof flakyTests.$inferSelect;
+export type NewFlakyTest = typeof flakyTests.$inferInsert;
+export type GoldenFile = typeof goldenFiles.$inferSelect;
+export type NewGoldenFile = typeof goldenFiles.$inferInsert;
+export type AgentCommunication = typeof agentCommunication.$inferSelect;
+export type NewAgentCommunication = typeof agentCommunication.$inferInsert;
+
+export type LoopRecord = LoopHistory;
+export type NewLoopRecord = NewLoopHistory;

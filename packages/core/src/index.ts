@@ -8,6 +8,9 @@ export {
 export type { ConfigWarning, LoadConfigOptions } from './config/loader.js';
 export type { DevLoopConfig } from './config/schema.js';
 
+export { checkConfigFile, safeParseWithMessage } from './config/errors.js';
+export type { ConfigCheckResult, SafeParseResult } from './config/errors.js';
+
 export {
   DevLoopError,
   ConfigError,
@@ -42,3 +45,17 @@ export {
   countTokens,
   countChatTokens,
 } from './utils/token-counter.js';
+
+export {
+  buildProjectRuntimePaths,
+  initProjectRuntime,
+} from './context/init-runtime.js';
+export type { InitResult } from './context/init-runtime.js';
+
+export {
+  DEV_LOOP_GITIGNORE_PATTERNS,
+  DEV_LOOP_VSCODE_FILES_EXCLUDE,
+  DEV_LOOP_VSCODE_SEARCH_EXCLUDE,
+  mergeGitignore,
+  mergeVSCodeSettings,
+} from './context/init-editor-support.js';

@@ -2813,3 +2813,800 @@ FEATURE009 review lesson:
 - For custom TypeScript `Error` subclasses, never force `Object.setPrototypeOf(this, DevLoopError.prototype)` in the base constructor. Use `Object.setPrototypeOf(this, new.target.prototype)` so `new ConfigError(...) instanceof ConfigError` remains true.
 - A "safe to log" error API must test redaction of nested `details` keys such as `apiKey`, `token`, `password`, `secret`, and `authorization`. Checking only that `stack` is absent is a false positive.
 - If a feature requires `code`, `action`, `details`, and `cause`, assert those fields on every exported subclass, including `DatabaseError`, not just on the base class.
+
+## Session Learnings: FEATURE013/016/017/018 Batch (2026-07-09)
+
+### Pattern A: Do Not Skip Reading Existing Code Before Implementing
+
+**What happened:** For FEATURE016, I wrote tests that asserted `config.coding.primary.provider` should be `'openrouter'`, but the actual default in `defaults.ts` is `'auto'`. For FEATURE017, I assumed Zod would reject `api_key: 12345` (number for a string field), but it passed because the schema has `.default('${ANTHROPIC_API_KEY}')` which overrides invalid values.
+
+**Why this mistake keeps happening:** The model tries to write tests based on the feature prompt's intent rather than reading what the code actually does. Feature prompts describe *desired* behavior; existing defaults may already differ from the spec.
+
+**Correct approach (always before writing tests):**
+1. Read `defaults.ts` to see actual default values.
+2. Read `schema.ts` and relevant section schemas to understand which Zod rules apply.
+3. Check if a module/file already exists (e.g., `config/errors.ts`).
+4. Run the existing test suite to see current behavior.
+
+### Pattern B: TypeScript Import Errors — Do Not Mix node:fs and node:fs/promises
+
+**What happened:** Across FEATURE016, I repeatedly wrote `import fs from 'node:fs/promises'` then tried to use sync methods like `fs.existsSync()`, `fs.readFileSync()`, etc. The promises API does not expose these. I also mixed `fsSync.mkdtempSync()` with `fsPromises.mkdtemp()`.
+
+**Why this mistake keeps happening:** The model conflates Node.js `fs` APIs — it knows the methods exist but forgets which API surface exposes them.
+
+**Correct approach:**
+- For **async** operations: `import * as fs from 'node:fs/promises'` or `import { readFile, writeFile } from 'node:fs/promises'`.
+- For **sync** operations: `import * as fsSync from 'node:fs'`.
+- Never mix them in the same import — use separate named imports.
+- If you need both, import them separately with distinct names.
+
+### Pattern C: Do Not Call `.catch()` on Non-Promise Return Values
+
+**What happened:** For FEATURE017, I wrote `expect(msg.toLowerCase()).toContain('redacted').catch(() => true)`. Vitest's `toContain` returns void (not a Promise), so `.catch()` is TypeScript-invalid. This broke compilation.
+
+**Why this mistake keeps happening:** The model overuses async patterns in sync test assertions. `expect().toContain()` is synchronous — no `.then()` or `.catch()`.
+
+**Correct approach:**
+- Assert synchronously: `expect(msg).toContain('redacted')`.
+- Only use `.resolves` / `.rejects` with actual Promises (e.g., async functions that return Promise<T>).
+
+### Pattern D: Zod Default Values Override Invalid Input Without Failing Validation
+
+**What happened:** For FEATURE017's redaction test, I passed `api_key: 12345` expecting schema validation to fail. But the schema has `.default('${ANTHROPIC_API_KEY}')` which silently overrides invalid values, so Zod never reported an error and my redaction code was never tested.
+
+**Why this mistake keeps happening:** The model assumes that any value not matching a type will trigger a Zod validation failure, but `.default()` intercepts invalid values before `safeParse` can report them as errors.
+
+**Correct approach:**
+1. Read the schema to see if fields have `.default()` applied — these silently override invalid values.
+2. Use values that violate constraints beyond just type (e.g., negative numbers for `.positive()` or `.min()`, strings > 6 chars for redaction).
+3. Test with a field that does NOT have `.default()` when testing validation failures.
+
+### Pattern E: Never Leave Duplicate Function Implementations After Refactoring
+
+**What happened:** For FEATURE017, I refactored `config/errors.ts` and left both old and new versions of `redactValue()`, `formatIssue()`, etc., causing TypeScript compilation errors ("Duplicate function implementation"). This wasted two iterations.
+
+**Why this mistake keeps happening:** The model writes a replacement function but forgets to delete the original. SEARCH/REPLACE can miss parts of the file, leading to duplicates.
+
+**Correct approach:**
+- After writing new functions, always do a full read-back and verify no duplicates exist.
+- Prefer `write_to_file` over `replace_in_file` when doing significant rewrites — it produces a clean single version.
+
+### Pattern F: Run Tests Against Real Config Defaults, Not Spec Assumptions
+
+**What happened:** For FEATURE016, I tested save/load with dot-notation keys and expected the saved value to appear in `coding.primary.provider`, but the YAML file had `provider: auto` (not `openrouter`). The test assertion was wrong because I assumed the prompt's spec matched reality.
+
+**Why this mistake keeps happening:** Feature prompts describe *desired* configuration values, not what defaults actually are. Defaults may have changed since the feature was written.
+
+**Correct approach:**
+- Before asserting config values in tests, read `defaults.ts` to know actual values.
+- Use assertions that check against actual defaults rather than hardcoded expected values.
+
+## Session Learnings: FEATURE019/020/021/022 Batch (2026-07-10)
+
+This section records mistakes, repeated fixes, red-phase failures, and working rules from the session that processed:
+
+- `FEATURES/FEATURE019.md`
+- `FEATURES/FEATURE020.md`
+- `FEATURES/FEATURE021.md`
+- `FEATURES/FEATURE022.md`
+
+The user explicitly required reading this knowledge base first, processing one feature file at a time, updating the feature document with the implementation notes, then moving it from `FEATURES/` to `REVIEW/`. That workflow was followed for FEATURE019 through FEATURE022, but several local-model failure patterns appeared along the way.
+
+### Pattern G: A Pre-existing Helper Can Be "Almost Right" But Still Write to the Wrong Place
+
+**What happened:** FEATURE019 already had untracked test and production files in the working tree:
+
+- `packages/core/src/__tests__/feature019-init-runtime.test.ts`
+- `packages/core/src/context/init-runtime.ts`
+
+The targeted command failed:
+
+```bash
+npm test -- init
+```
+
+Observed failure:
+
+```text
+expected 'undefined' to be 'string'
+expected false to be true
+```
+
+The implementation returned `result.files.FEATURES`, but it created default file content by iterating this object:
+
+```ts
+const DEFAULT_FILE_CONTENTS: Record<string, string> = {
+  [RUNTIME_FILES.FEATURES]: '# Dev-Loop Features\n',
+  [RUNTIME_FILES.BUGS]: '# Known Bugs\n',
+  ...
+};
+
+for (const [filePath, content] of Object.entries(DEFAULT_FILE_CONTENTS)) {
+  if (!fsSync.existsSync(filePath)) {
+    fsSync.writeFileSync(filePath, content, 'utf-8');
+  }
+}
+```
+
+That looked plausible but was wrong. The object keys were file names like `FEATURES.md`, not computed paths like `<project>/.dev-loop/FEATURES.md`. In a real working directory, this kind of bug can create or overwrite root-level workflow files instead of runtime files under `.dev-loop/`.
+
+The test also expected `result.dirs.sandbox`, but the implementation returned uppercase keys because `RUNTIME_DIRS` used `SANDBOX`, `CHECKPOINTS`, and `LOGS`.
+
+**Why this mistake happens:** The model sees a constant named like "runtime files" and treats file names as file paths. It also makes API key casing decisions from implementation convenience instead of from the test/user-facing result shape.
+
+**How it was solved:**
+
+- Added/exported `buildProjectRuntimePaths(projectDir)` as the path computation helper.
+- Changed directory result keys to lower-case runtime API keys: `sandbox`, `checkpoints`, `logs`.
+- Changed default content lookup to be keyed by logical file key (`FEATURES`, `BUGS`, etc.).
+- Wrote defaults using `result.files[key]`, not raw file names.
+- Exported `initProjectRuntime` and `buildProjectRuntimePaths` from `packages/core/src/index.ts`.
+- Updated the core entrypoint test to prove the helper is an intentional public API.
+
+Verification used:
+
+```bash
+npm test -- init
+npm test -- packages/core/src/__tests__/core-entrypoint.test.ts
+npm run typecheck
+npm run build -- --force
+node -e "const core = await import('./packages/core/dist/index.js'); console.log(typeof core.initProjectRuntime, typeof core.buildProjectRuntimePaths)"
+find packages/*/src -type f \( -name '*.js' -o -name '*.d.ts' -o -name '*.js.map' -o -name '*.d.ts.map' \) -print
+```
+
+**Rule for future local models:** When creating files under a runtime directory, tests must assert the exact path on disk. Do not infer correctness from an object that merely contains names. If a helper returns path maps, write files through those maps.
+
+### Pattern H: Do Not Treat Prompt Exclusion Lists as "Ignore the Whole Directory"
+
+**What happened:** FEATURE020 asked for `.gitignore` and VS Code settings helpers. The important source of truth was the `dev-loop-prompt.md` section around `.gitignore Additions` and `VS Code Settings`. It says `.dev-loop/` is partially committed:
+
+- Commit:
+  - `dev-loop.yaml`
+  - `.dev-loop/FEATURES.md`
+  - `.dev-loop/BUGS.md`
+  - `.dev-loop/CODE_MAP.md`
+  - `.dev-loop/DECISIONS.md`
+  - `.dev-loop/PATTERNS.md`
+- Do not commit:
+  - `.dev-loop/dev-loop.db`
+  - `.dev-loop/dev-loop.db-shm`
+  - `.dev-loop/dev-loop.db-wal`
+  - `.dev-loop/sandbox/`
+  - `.dev-loop/checkpoints/`
+  - `.dev-loop/logs/`
+
+The existing root `.gitignore` already ignored `.dev-loop/`, but FEATURE020 was about helpers for user projects, not about rewriting the repo root `.gitignore`. The implementation had to use temp directories and preserve the prompt's partial-commit semantics.
+
+**Why this mistake happens:** It is tempting to see "runtime directory" and add `.dev-loop/` to `.gitignore`. That contradicts the prompt. Some files in `.dev-loop/` are workflow state and should be committed.
+
+**How it was solved:**
+
+- Added tests in `packages/core/src/__tests__/feature020-gitignore-vscode.test.ts` using temp project directories only.
+- Implemented `mergeGitignore(projectDir)` in `packages/core/src/context/init-editor-support.ts`.
+- The helper adds only the prompt-specified runtime data exclusions.
+- The test explicitly asserts that `.dev-loop/`, `.dev-loop/FEATURES.md`, and `.dev-loop/BUGS.md` are not ignored.
+
+**Rule for future local models:** For init helpers, never edit the current repo root as proof. Use a temp project and assert exact files/patterns. When a prompt says a directory is partially committed, do not simplify it into a whole-directory ignore.
+
+### Pattern I: Substring-Based Duplicate Tests Can Produce False Failures
+
+**What happened:** During FEATURE020, the duplicate gitignore test originally used this assertion:
+
+```ts
+expect(content.match(/\.dev-loop\/dev-loop\.db/g)).toHaveLength(1);
+```
+
+After implementation, the test failed:
+
+```text
+expected [ '.dev-loop/dev-loop.db', …(2) ] to have a length of 1 but got 3
+```
+
+The helper was not duplicating the exact `.dev-loop/dev-loop.db` line. The regex also matched the prefix inside:
+
+```text
+.dev-loop/dev-loop.db-shm
+.dev-loop/dev-loop.db-wal
+```
+
+**Why this mistake happens:** Regexes that search for a pattern inside a whole file can accidentally match substrings of longer patterns. This is especially common with file names that share prefixes.
+
+**How it was solved:**
+
+The test was changed to count exact trimmed lines:
+
+```ts
+function countExactLine(content: string, line: string): number {
+  return content
+    .split(/\r?\n/)
+    .filter(value => value.trim() === line).length;
+}
+
+expect(countExactLine(content, '.dev-loop/dev-loop.db')).toBe(1);
+```
+
+**Rule for future local models:** When testing `.gitignore`, config files, generated manifests, or line-based files, count exact lines unless substring matching is truly the behavior. Do not use broad regexes for duplicate prevention when entries share prefixes.
+
+### Pattern J: `instanceof` Can Be Broken by the Base Error Constructor
+
+**What happened:** FEATURE020 needed invalid `.vscode/settings.json` to throw an actionable `ConfigError`. The test used:
+
+```ts
+expect(() => mergeVSCodeSettings(projectDir)).toThrow(ConfigError);
+```
+
+The failure was surprising:
+
+```text
+expected error to be instance of ConfigError
+
+Received:
+[ConfigError: Invalid VS Code settings JSON.]
+```
+
+The error name was `ConfigError`, but `instanceof ConfigError` failed. The root cause was in `DevLoopError`:
+
+```ts
+Object.setPrototypeOf(this, DevLoopError.prototype);
+```
+
+That line forces every subclass instance back to the base prototype.
+
+**Why this mistake happens:** A local model remembers that custom Error subclasses often need `Object.setPrototypeOf`, but uses the base class prototype instead of the actual subclass prototype. The bug can stay hidden if tests only check `name`, `message`, or `code`.
+
+**How it was solved:**
+
+Changed the base constructor to:
+
+```ts
+Object.setPrototypeOf(this, new.target.prototype);
+```
+
+Then re-ran:
+
+```bash
+npm test -- gitignore vscode
+npm test -- packages/core/src/__tests__/feature009-core-error-classes.test.ts
+```
+
+Both passed.
+
+**Rule for future local models:** For custom `Error` subclasses, always use `new.target.prototype` in the base constructor. If adding a new typed error path, test `toThrow(MyErrorClass)` or `error instanceof MyErrorClass`, not only `error.name`.
+
+### Pattern K: Public Core Helper Exports Should Be Explicit and Tested
+
+**What happened:** FEATURE019 and FEATURE020 added helpers meant for future `dev-loop init` behavior:
+
+- `initProjectRuntime`
+- `buildProjectRuntimePaths`
+- `mergeGitignore`
+- `mergeVSCodeSettings`
+
+The repo has an explicit-root-API rule: do not add broad `export *` from package roots. The first instinct in many local-model sessions is to export whole directories or internals until imports work.
+
+**How it was solved:**
+
+Only named exports were added to `packages/core/src/index.ts`, and the existing core entrypoint test was expanded:
+
+```ts
+expect(core).toEqual(expect.objectContaining({
+  buildProjectRuntimePaths: expect.any(Function),
+  initProjectRuntime: expect.any(Function),
+  mergeGitignore: expect.any(Function),
+  mergeVSCodeSettings: expect.any(Function),
+}));
+```
+
+**Rule for future local models:** When a feature creates reusable core helpers, export them deliberately by name and update the entrypoint test. Do not use `export *` from a package root to make tests pass.
+
+### Pattern L: Schema Existing in Source Does Not Mean Drizzle Metadata Is Complete
+
+**What happened:** FEATURE021 asked for real Drizzle SQLite table definitions, indexes, and inferred select/insert types for the first table group:
+
+- `loop_history`
+- `loop_turns`
+- `error_patterns`
+- `success_patterns`
+- `model_profiles`
+
+At first glance, `packages/core/src/db/schema.ts` already used `sqliteTable`, `integer`, `text`, and `real`. The initial schema tests passed. But the feature also required indexes and type exports. The new test failed:
+
+```text
+expected [] to deeply equal ArrayContaining [...]
+```
+
+`getTableConfig(loopHistory).indexes` was empty because the indexes existed only in raw migration SQL, not in Drizzle table metadata.
+
+**Why this mistake happens:** The model confuses "the database migration creates indexes" with "the Drizzle schema declares indexes." FEATURE021 specifically wanted Drizzle schema foundation, so metadata matters.
+
+**How it was solved:**
+
+Added index builders as the third `sqliteTable` argument:
+
+```ts
+export const loopHistory = sqliteTable('loop_history', {
+  ...
+}, table => {
+  return {
+    createdAtIdx: index('idx_loop_history_created').on(table.createdAt),
+    primaryModelIdx: index('idx_loop_history_model').on(table.primaryModel),
+    successIdx: index('idx_loop_history_success').on(table.success),
+  };
+});
+```
+
+Also added first-group type exports:
+
+```ts
+export type LoopHistory = typeof loopHistory.$inferSelect;
+export type NewLoopHistory = typeof loopHistory.$inferInsert;
+export type ErrorPattern = typeof errorPatterns.$inferSelect;
+export type NewErrorPattern = typeof errorPatterns.$inferInsert;
+...
+```
+
+The migration was kept in lockstep by adding the missing model profile lookup index:
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_model_profiles_lookup
+ON model_profiles(model, provider, feature_type, language, hour_of_day);
+```
+
+**Rule for future local models:** If a feature mentions Drizzle indexes, test `getTableConfig(table).indexes`, not only `PRAGMA index_list` from migrated SQLite. If a feature mentions full DB behavior, test both Drizzle metadata and migration-created tables/indexes.
+
+### Pattern M: Type-only Exports Need `npm run typecheck`, Not Just Vitest
+
+**What happened:** FEATURE021 and FEATURE022 added many `export type` aliases based on `$inferSelect` and `$inferInsert`. Vitest can run tests even when type-only expectations are not fully meaningful at runtime. A test can import types and appear fine under transformation, while `tsc --noEmit` is the real proof.
+
+**How it was solved:**
+
+The feature tests used type-level assignments such as:
+
+```ts
+function expectType<T>(value: T): T {
+  return value;
+}
+
+const newLoop = expectType<NewLoopHistory>({ featureId: 'feature-1' });
+```
+
+Then `npm run typecheck` was always run after the targeted schema test.
+
+**Rule for future local models:** For TypeScript type exports, the acceptance proof must include `npm run typecheck`. Vitest is not enough for type-only API guarantees.
+
+### Pattern N: Do Not Overfit Timestamp Tests to One Column Name
+
+**What happened:** FEATURE022 added tests for remaining DB tables. The first version assumed every remaining table had a `createdAt` property:
+
+```ts
+expect(getTableColumns(table).createdAt.name).toBe('created_at');
+```
+
+The targeted command failed:
+
+```text
+Cannot read properties of undefined (reading 'name')
+```
+
+The schema had legitimate existing table shapes:
+
+- Most tables use `created_at` exposed as `createdAt`.
+- `flaky_tests` uses `first_seen` and `last_seen`.
+- `agent_communication` uses `timestamp`.
+
+**Why this mistake happens:** The prompt says "Do not omit created timestamps", and the model turns that into one exact property name everywhere. Existing schema and migration details matter more than a generic wording shortcut.
+
+**How it was solved:**
+
+The test was changed to accept the actual timestamp column shape for each table:
+
+```ts
+function timestampColumnName(table: Parameters<typeof getTableColumns>[0]): string {
+  const columns = getTableColumns(table) as Record<string, { name: string } | undefined>;
+  const timestampColumn = columns.createdAt ?? columns.firstSeen ?? columns.timestamp;
+  if (!timestampColumn) {
+    throw new Error(`Missing timestamp column on ${getTableName(table)}`);
+  }
+  return timestampColumn.name;
+}
+```
+
+Then the test asserted `created_at`, `first_seen`, or `timestamp` depending on the table.
+
+**Rule for future local models:** Before writing schema assertions, inspect actual table shapes. If the schema intentionally uses different timestamp names, assert the invariant ("has a timestamp") without forcing one property name everywhere.
+
+### Pattern O: Raw `UNIQUE(...)` in Migration Is Not the Same as Named Drizzle Unique Index Metadata
+
+**What happened:** FEATURE022 required important unique indexes. Existing migration SQL already had uniqueness:
+
+```sql
+UNIQUE(provider, ticket_id)
+```
+
+and some Drizzle columns used `.unique()`:
+
+```ts
+testName: text('test_name').notNull().unique()
+filePath: text('file_path').notNull().unique()
+```
+
+But the new Drizzle metadata test failed:
+
+```text
+expected [] to include 'idx_tickets_provider_ticket_unique'
+```
+
+`getTableConfig(tickets).indexes` was empty. Column `.unique()` was visible as a column property, not as the named important index metadata the test expected.
+
+**Why this mistake happens:** The model conflates three related but distinct things:
+
+1. SQLite table-level `UNIQUE(...)`.
+2. Drizzle column `.unique()`.
+3. Drizzle `uniqueIndex('name').on(...)` metadata.
+
+For feature tests that need named important unique indexes, only the third gives a named index in `getTableConfig(table).indexes`.
+
+**How it was solved:**
+
+Added explicit Drizzle unique indexes:
+
+```ts
+export const tickets = sqliteTable('tickets', {
+  ...
+}, table => {
+  return {
+    providerTicketUniqueIdx: uniqueIndex('idx_tickets_provider_ticket_unique').on(table.provider, table.ticketId),
+  };
+});
+```
+
+and matching SQLite migration SQL:
+
+```sql
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_provider_ticket_unique
+ON tickets(provider, ticket_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_flaky_tests_test_name_unique
+ON flaky_tests(test_name);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_golden_files_file_path_unique
+ON golden_files(file_path);
+```
+
+**Rule for future local models:** If the prompt says "important unique indexes are declared," prefer explicit `uniqueIndex()` in Drizzle plus matching migration SQL. Do not rely only on table-level `UNIQUE` or `.unique()` unless the test explicitly checks those semantics.
+
+### Pattern P: Keep Schema and Migration in Lockstep Even When the Test Only Fails on One Side
+
+**What happened:** FEATURE021 and FEATURE022 failures were initially visible through Drizzle metadata tests. It would have been easy to fix only `schema.ts`. But this repo requires schema and migration lockstep.
+
+**How it was solved:**
+
+Every new Drizzle index declaration was mirrored in `packages/core/src/db/migrations.ts`:
+
+- `idx_model_profiles_lookup`
+- `idx_tickets_provider_ticket_unique`
+- `idx_flaky_tests_test_name_unique`
+- `idx_golden_files_file_path_unique`
+
+Verification included:
+
+```bash
+npm test -- schema
+npm run typecheck
+npm run build -- --force
+```
+
+**Rule for future local models:** Any DB table/index/column change touches both `schema.ts` and `migrations.ts` unless there is a documented reason not to. Add or update tests that prove both source-of-truth files agree.
+
+### Pattern Q: Lint Exit 0 With Warnings Must Be Reported Precisely
+
+**What happened:** During FEATURE020, FEATURE021, and FEATURE022, `npm run lint` exited `0` but printed two warnings:
+
+```text
+packages/core/src/__tests__/feature010-typed-event-bus.test.ts
+  'EventName' is defined but never used
+
+packages/core/src/__tests__/feature018-config-coverage.test.ts
+  'assertion' is defined but never used
+```
+
+These warnings were unrelated to the touched feature files, and lint still exited `0`.
+
+**Why this matters:** Saying "lint passed" without mentioning warnings can recreate the old false-signal problem. Saying "lint failed" would also be inaccurate because the exit code was `0`.
+
+**How it was handled:**
+
+The review notes for completed features stated:
+
+```text
+npm run lint: exit 0 with two pre-existing warnings in unrelated tests.
+```
+
+**Rule for future local models:** Always report lint as command + exit behavior + warnings. If warnings are unrelated and exit code is 0, do not block the feature, but record them as residual debt.
+
+### Pattern R: Moving Feature Files Is Part of the Done State, But Only After Verification
+
+**What happened:** For each completed feature, the prompt required appending implementation notes to the feature file and moving it to `REVIEW/`:
+
+- `FEATURES/FEATURE019.md` -> `REVIEW/FEATURE019.md`
+- `FEATURES/FEATURE020.md` -> `REVIEW/FEATURE020.md`
+- `FEATURES/FEATURE021.md` -> `REVIEW/FEATURE021.md`
+- `FEATURES/FEATURE022.md` -> `REVIEW/FEATURE022.md`
+
+This was done only after targeted tests and required verification commands passed.
+
+**Why this matters:** Queue files are process state, not source code. Moving them early creates a stale review claim. The knowledge base already says not to trust review files without commands; this session confirmed that discipline still matters.
+
+**Rule for future local models:** Do not move a feature prompt to `REVIEW/` until:
+
+1. The red phase was observed or the missing behavior was proven.
+2. The implementation is complete.
+3. The targeted verification command passes.
+4. Required TypeScript/build/lint/source-artifact checks have been run as applicable.
+5. The feature MD contains what changed, how it was solved, commands run, and any remaining warnings.
+
+### Pattern S: Do Not Continue the Feature Queue After the User Interrupts With a New Instruction
+
+**What happened:** After FEATURE022 was moved to `REVIEW/`, the user interrupted the turn and asked to update `KNOWLEDBASE.md` with every repeated or mistaken action from the session.
+
+**Correct behavior:** Stop reading the next feature file and switch to the newest user instruction. Do not continue the feature queue in the background.
+
+**Rule for future local models:** When the user interrupts with a meta-instruction, treat it as the active task. Do not keep advancing `FEATURES/` until the new request is complete.
+
+## Review Audit Batch: BUG035-BUG039 (2026-07-10)
+
+A follow-up session re-audited every file sitting in `REVIEW/` (FEATURE013, FEATURE016, FEATURE017, FEATURE018, FEATURE019, FEATURE020, FEATURE021, FEATURE022 — FEATURE023/024/025 were produced and verified in the same session and were already solid). Six of eleven review claims were accurate and were deleted. Five were **not** actually done despite being marked `PASSING` or moved into `REVIEW/` — every single one passed `npm test`, `npm run typecheck`, `npm run build`, and `npm run lint` at the time it was written, and every single one still had a real, concrete gap that those four commands cannot detect. This section exists so that a model reading this file **stops treating "the four commands passed" as proof of "the acceptance criteria are met."** They are two different claims. The four commands prove the code compiles and the tests that exist pass. Only reading the acceptance criteria one by one, against the actual code, proves the feature is done.
+
+Each pattern below is a distinct failure mode. Read all of them before writing or reviewing anything in this repo — they are exactly the mistakes this file exists to prevent, and they still slipped through twice.
+
+### Pattern T: Monorepo Hoisting Hides a Missing Package Dependency (BUG035)
+
+**What happened:** FEATURE013 required using the real `yaml` library instead of a hand-written parser. `packages/core/src/config/parse.ts` does `import YAML from 'yaml'` in production source. Every verification command passed: `npm test`, `npm run typecheck`, `npm run build`, `npm run lint`. The review declared "FEATURE013 requirements are fully satisfied."
+
+But `packages/core/package.json` never listed `yaml` as a dependency at all:
+
+```bash
+$ grep -n yaml packages/core/package.json
+# (no output — nothing there)
+```
+
+`yaml` only resolved because the **root** `package.json` happened to list it under `devDependencies` (for unrelated tooling reasons), and npm workspaces hoist all workspace dependencies into one shared root `node_modules/`. Proof the package doesn't actually own it:
+
+```bash
+$ cd packages/core && npm ls yaml
+dev-loop@0.1.0 /Users/hasanislamoglu/dev-loop
+└── (empty)
+```
+
+**Why it is wrong:** `@dev-loop/core`'s published tarball ships only `dist/` + `package.json` (per the packaging rules established in the BUG031-033 batch above). Someone who installs `@dev-loop/core` on its own — not inside this monorepo — will not get `yaml` installed, and the built `dist/config/parse.js` will throw `ERR_MODULE_NOT_FOUND` at runtime. Every command the review ran works fine *inside the monorepo* precisely because hoisting papers over the missing declaration. This is a blind spot specific to npm/pnpm/yarn workspaces: **a working `import` inside the monorepo is not evidence that the importing package declares the dependency it needs.**
+
+**Why local models make this mistake:** They see the import resolve and the tests pass and stop there. They do not distinguish "this module can be found right now, in this checkout" from "this package's own manifest declares everything it imports."
+
+**Correct behavior — whenever a package's `src/` imports a new package from npm:**
+
+```bash
+# 1. Check the package's OWN manifest, not the root one.
+grep -n '"<package-name>"' packages/<workspace>/package.json
+
+# 2. Check what the workspace itself sees as resolved for it — not root, not `node_modules` existence.
+cd packages/<workspace> && npm ls <package-name>
+# A correct result names the version. "(empty)" or an error means the package doesn't
+# own that dependency even though the import currently works by accident of hoisting.
+```
+
+If step 2 prints `(empty)`, add the dependency directly to that workspace's `package.json` `dependencies` (or `devDependencies` if it's dev/test-only), then run `npm install` at the root so the lockfile records it correctly per-workspace.
+
+**Rule:** Every `import`/`require` of a third-party package inside `packages/<workspace>/src/**` must have a corresponding entry in that exact `packages/<workspace>/package.json` — never assume the root manifest or another workspace's manifest covers it. Verify with `npm ls <pkg>` run *from inside that workspace directory*, not from root.
+
+### Pattern U: An Error That Computes a Path but Doesn't Use It (BUG036)
+
+**What happened:** FEATURE016's acceptance criteria explicitly included "Errors include config path." `packages/core/src/config/loader.ts` does compute the real resolved path:
+
+```ts
+const filePath = options.configPath ?? path.join(projectDir, 'dev-loop.yaml');
+```
+
+But the `ConfigError` thrown later never receives it:
+
+```ts
+// Bad — filePath was computed above but never passed in:
+throw new ConfigError(
+  'dev-loop.yaml failed validation.',
+  'Fix the reported config keys and run the command again.',
+  { issues: validated.error.errors },
+);
+```
+
+The message hardcodes the literal string `"dev-loop.yaml"` — which is simply wrong whenever a caller supplies a custom `configPath` pointing somewhere else. The existing test only checked a fixed substring (`/Invalid dev-loop.yaml syntax/`), never the actual resolved path, so nothing caught this.
+
+**Why it is wrong:** A user who points `configPath` at `config/staging.yaml` and gets a validation error that says "dev-loop.yaml failed validation" will look in the wrong file. An acceptance criterion that says "errors include X" is not satisfied by an error that includes a hardcoded guess at X — it must include the actual runtime value.
+
+**Why local models make this mistake:** They see a plausible-sounding hardcoded string that matches the common case (default path) and mentally check off the criterion without asking "what if the value that matters here is a variable, not a constant?" They also write tests only against the default path, never against a custom one — which is exactly the input that would have exposed the bug.
+
+**Correct fix pattern:**
+
+```ts
+// Good — the same variable already in scope is threaded through:
+throw new ConfigError(
+  `Config at ${filePath} failed validation.`,
+  'Fix the reported config keys and run the command again.',
+  { path: filePath, issues: validated.error.errors },
+);
+```
+
+**Correct test pattern — always test the non-default case for "includes X" criteria:**
+
+```ts
+it('includes the resolved config path in a validation error', async () => {
+  const projectDir = await tempProjectDir();
+  const customPath = path.join(projectDir, 'custom-config.yaml'); // NOT the default dev-loop.yaml
+  await fsPromises.writeFile(customPath, 'ui:\n  port: "not-a-number"\n');
+
+  await expect(loadConfig({ projectDir, configPath: customPath, invalidConfig: 'throw' }))
+    .rejects.toThrow(new RegExp(customPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+});
+```
+
+**Rule:** When an acceptance criterion says an error must "include" some piece of runtime information (a path, an ID, a key name), write the regression test using a value that is *different from the common/default case*. If a test only ever exercises the default value, a hardcoded string in the implementation will pass it undetected.
+
+### Pattern V: A Library Function Isn't "Done" Until Something Actually Calls It (BUG037)
+
+**What happened:** FEATURE017 required a formatter for Zod validation errors with acceptance criterion #5: "CLI can print helpful validation failures." `packages/core/src/config/errors.ts` defines `safeParseWithMessage()`, has 6 passing unit tests, and the review marked all 5 acceptance criteria satisfied.
+
+```bash
+$ grep -rn "safeParseWithMessage" packages/cli/src packages/core/src/index.ts
+# no matches — the function is never imported anywhere outside its own file and its own test
+```
+
+Nothing in `packages/cli/src` calls it. Nothing in `packages/core/src/index.ts` re-exports it. It is a fully-tested, fully-typed, completely orphaned function — a library capability that no caller can reach.
+
+Additionally, criterion #2 required "key path, received value summary, expected kind, **and suggested fix**." The implementation produces path, received value, and expected kind — and stops. There is no suggested-fix text anywhere, and the review's own "Implementation Summary" quietly lists only the three things that *were* built, without noticing the fourth thing was dropped.
+
+**Why it is wrong:** "Export a helper" and "the CLI can use the helper" are two different acceptance criteria, and only the first was met. A unit test on an isolated function proves the function works in isolation — it proves nothing about whether any caller in the actual product uses it. Similarly, when an acceptance criterion lists N required elements ("path, received, expected, suggested fix"), each element needs its own assertion; a review that says "includes path, received value, expected kind" without mentioning the fourth item is silently telling you it wasn't built, even though it reads as a plausible summary.
+
+**Why local models make this mistake:** They treat "exported from the module" and "used by the feature" as the same milestone. They summarize what they built by listing what's easy to list, and an omitted item quietly vanishes from the summary rather than triggering a "wait, is this actually done?" check. They also don't grep for consumers of the new function before calling the feature complete.
+
+**Correct behavior for any feature whose criteria mention a downstream consumer (CLI/UI/etc.), not just a library function:**
+
+1. After writing the library function, grep for its usage outside its own file and test:
+   ```bash
+   grep -rn "<newFunctionName>" packages/cli/src packages/ui/src packages/core/src/index.ts
+   ```
+   If that returns nothing and the feature's acceptance criteria mention "CLI can..." or "UI shows...", the feature is not done — wire it in.
+2. When an acceptance criterion enumerates a list of required elements, write one assertion per element and name the test after that exact element, e.g. `it('includes a suggested fix for invalid enum values', ...)`. If you cannot write that specific test because the behavior doesn't exist yet, that is the red phase — implement it, don't skip it.
+3. Before writing a completion summary, re-read the acceptance criteria list line by line and match each one to a specific test name and a specific line of production code. Any criterion you cannot point to a test for is not done.
+
+**Rule:** A helper function with passing unit tests is not "integrated" or "usable by the CLI" until something outside its own module and test file actually imports and calls it. Grep for real callers before declaring a feature complete whenever the prompt names a consumer.
+
+### Pattern W: `describe.each`/`it.each` Rows That Never Use Their Own Parameters (BUG038)
+
+**What happened:** FEATURE018 needed tests for "every config section default" — i.e., that `DEFAULT_CONFIG.loop.max_retry === 5`, `DEFAULT_CONFIG.ui.port === 3747`, etc. The test file built exactly that table:
+
+```ts
+// Bad — assertion is captured but never evaluated:
+describe.each([
+  ['version', 'DEFAULT_CONFIG.version === "1"'],
+  ['planning.primary.provider', 'DEFAULT_CONFIG.planning.primary.provider === "anthropic"'],
+  ['loop.max_retry', 'DEFAULT_CONFIG.loop.max_retry === 5'],
+  ['ui.port', 'DEFAULT_CONFIG.ui.port === 3747'],
+  // ...16 more rows
+])('Default value for %s', (_label, assertion) => {
+  it(`has all required sections in DEFAULT_CONFIG`, () => {
+    expect(DEFAULT_CONFIG).toHaveProperty('version');
+    expect(DEFAULT_CONFIG).toHaveProperty('planning');
+    expect(DEFAULT_CONFIG).toHaveProperty('loop');
+    expect(DEFAULT_CONFIG).toHaveProperty('ui');
+    // ...same 19 toHaveProperty checks, verbatim, on every single row
+  });
+});
+```
+
+The second column of every row (`assertion`) — the part that actually encodes "what value should this key have" — is destructured into the test callback and then **never referenced**. All 20 generated test cases run the identical, generic "does this top-level key exist" check, regardless of which row produced them. The suite reported "31 tests passed" for this file, which reads as thorough coverage; in reality zero of those tests check an actual default *value* like `max_retry === 5`. ESLint even flagged this — `'assertion' is defined but never used` — and a prior review batch filed that warning away as harmless pre-existing debt instead of recognizing it as a symptom of a broken test.
+
+**Why it is wrong:** A parameterized test whose body ignores its own parameters isn't testing N different things — it's testing the same one thing N times while *looking* like N things were verified. This is a more insidious version of "Do Not Use Placeholder Tests" (see above) because it doesn't look like a placeholder; it has real, specific-looking row data that never gets used.
+
+**Why local models make this mistake:** They build the data table first (which requires real thought — reading `defaults.ts`, writing each expected value), then write a generic test body as a starting skeleton, and never go back to make the body actually consume the per-row data. The table looks complete, so the feature looks complete.
+
+**Correct fix — make every declared parameter load-bearing, or don't declare it:**
+
+```ts
+// Good — the second element is a real getter/expected-value pair that gets evaluated:
+describe.each([
+  ['version', (c: DevLoopConfig) => c.version, '1'],
+  ['loop.max_retry', (c: DevLoopConfig) => c.loop.max_retry, 5],
+  ['ui.port', (c: DevLoopConfig) => c.ui.port, 3747],
+  ['voice.enabled', (c: DevLoopConfig) => c.voice.enabled, false],
+])('%s default', (_label, getValue, expected) => {
+  it('matches the documented default', () => {
+    expect(getValue(DEFAULT_CONFIG)).toBe(expected);
+  });
+});
+```
+
+or, more simply, skip the table entirely and write one direct `it()` per default — more verbose, but impossible to write without actually checking the value:
+
+```ts
+it('defaults loop.max_retry to 5', () => {
+  expect(DEFAULT_CONFIG.loop.max_retry).toBe(5);
+});
+```
+
+**Verification rule specific to this failure mode:** After writing any `describe.each`/`it.each` table, deliberately break one of the real values being tested (e.g. temporarily change `max_retry: 5` to `max_retry: 4` in `defaults.ts`) and re-run the test. If it still passes, the parameterization is decorative and the test body needs to be fixed before it proves anything. Revert the deliberate break afterward.
+
+**Separately:** the `REVIEW/FEATURE018-*.md` file for this feature was the bare, unedited prompt template — no verdict, no command output, no "what changed" section — yet it was already sitting in `REVIEW/`. Combined with "Pattern R" above (a feature MD must contain what changed/how it was solved/commands run before moving to `REVIEW/`), this means the process rule was skipped *and* the underlying test was broken — two independent failures compounding into one false "done" signal.
+
+### Pattern X: Drizzle Schema Metadata Must Mirror Every Constraint the Migration Enforces, Including Foreign Keys (BUG039)
+
+**What happened:** FEATURE021/FEATURE022's own "Common Local Model Mistakes" section says, in as many words: "Do not forget foreign key references where prompt requires them." Earlier in this same feature pair, the equivalent gap for **indexes** (Pattern L above) and **unique constraints** (Pattern O above) was caught and fixed — Drizzle `index()` and `uniqueIndex()` builders were added so the ORM's own metadata matched the raw migration SQL. Foreign keys were not given the same treatment:
+
+```bash
+$ grep -n "references(" packages/core/src/db/schema.ts
+# zero matches, across the entire file
+```
+
+Every FK-bearing column — `loop_turns.loop_id`, `mcp_usage.loop_id`, `mcp_errors.loop_id`, `mcp_scores.loop_id`, `quality_history.loop_id`, `uncertain_tags.loop_id`, `notification_log.loop_id`, `user_ratings.loop_id`, `tickets.loop_id`, and more — is declared as a bare, unconstrained integer column in Drizzle:
+
+```ts
+// Bad — no .references(), even though the real database enforces this relationship:
+export const mcpUsage = sqliteTable('mcp_usage', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  loopId: integer('loop_id').notNull(),
+  // ...
+});
+```
+
+while `db/migrations.ts` creates the actual constraint:
+
+```sql
+CREATE TABLE IF NOT EXISTS mcp_usage (
+  ...
+  FOREIGN KEY (loop_id) REFERENCES loop_history(id)
+);
+```
+
+**Why it is wrong:** This is the exact same "raw migration SQL is not the same as Drizzle schema metadata" trap as Pattern L (indexes) and Pattern O (unique constraints) — except this time for foreign keys specifically, despite the feature prompt naming that exact risk. Anything that introspects the Drizzle schema for relationships (Drizzle's relational query builder, ER-diagram tooling, future codegen) will see none of these FK relationships, even though the database genuinely enforces them.
+
+**Why local models make this mistake:** Once the *specific* named gap in a prompt ("don't forget X") has already been fixed for a sibling concept (indexes, unique constraints) earlier in the same batch, it is easy to feel like "the metadata-vs-migration lesson" has been applied and stop checking for the one item the prompt called out by name for *this* feature. The lesson was learned generically but not applied to the specific noun (foreign keys) the prompt used.
+
+**Correct fix:**
+
+```ts
+export const mcpUsage = sqliteTable('mcp_usage', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  loopId: integer('loop_id').notNull().references(() => loopHistory.id),
+  // ...
+});
+```
+
+**Correct regression test — mirrors the existing index/unique-index metadata tests, using `getTableConfig(...).foreignKeys` instead:**
+
+```ts
+import { getTableConfig } from 'drizzle-orm/sqlite-core';
+
+it('declares the loop_id foreign key on mcp_usage', () => {
+  expect(getTableConfig(mcpUsage).foreignKeys.length).toBeGreaterThan(0);
+});
+```
+
+**Rule:** Whenever a feature prompt names a specific constraint category ("indexes", "unique constraints", "foreign keys", "defaults", "timestamps"), audit *that exact category* across *every* table the feature touches — do not assume that fixing one category (e.g. indexes) means a sibling category named in the same sentence (foreign keys) was also covered. Grep for the Drizzle builder that encodes it (`index(`, `uniqueIndex(`, `.references(`) across the whole schema file as a final check, and compare the count against how many `FOREIGN KEY` / `CREATE INDEX` / `CREATE UNIQUE INDEX` statements exist in the migration for the same tables — the counts should match.
+
+### Pattern Y: A "PASSING" Verdict Is a Claim About the Past, Not a Fact About Now — Audits Must Re-Derive Every Criterion From Source
+
+**The unifying lesson across BUG035-BUG039:** every one of these five features had a review document claiming completion, and every one of those review documents had genuinely run `npm test`, `npm run typecheck`, `npm run build`, and `npm run lint` and gotten a clean result. None of the review authors lied about the commands they ran. All five were still wrong, because:
+
+- BUG035 needed a check *outside* the monorepo's hoisted `node_modules` (per-workspace `npm ls`).
+- BUG036 needed a test using a *non-default* input value, not just the happy path.
+- BUG037 needed a grep for *external callers* of a new function, not just its own unit test.
+- BUG038 needed someone to *read the test body*, not just its pass/fail count, and notice a captured variable was unused.
+- BUG039 needed a category-by-category diff between the Drizzle schema and the raw migration SQL, specifically for the one category (foreign keys) the prompt named.
+
+None of these gaps show up in a green `npm test` / `npm run typecheck` / `npm run build` / `npm run lint` run. **A clean run of the four standard commands is necessary but never sufficient.** When auditing a `REVIEW/*.md` file (or any "done" claim), the actual audit procedure is:
+
+1. Re-run the exact commands the review claims to have run — confirm they still pass. This only rules out regressions since the review was written; it does not confirm the review was ever correct.
+2. Open the feature prompt's acceptance criteria list and, for every single bullet, find the specific test and the specific line of production code that satisfies it. If a criterion has no test pointing at it, treat the feature as unproven for that criterion, no matter what else passes.
+3. For every enumerated list inside a criterion ("path, received value, expected kind, **and suggested fix**"), check each item individually — a summary that silently drops one item from a four-item list is a strong signal that item was never built.
+4. Grep for real external callers whenever a criterion mentions a consumer ("CLI can...", "UI shows...").
+5. For dependency changes, verify from inside the specific workspace (`cd packages/<x> && npm ls <pkg>`), never from the repo root, since monorepo hoisting hides missing per-workspace declarations.
+6. For parameterized tests (`describe.each`/`it.each`), read the test body and confirm every destructured parameter is actually used in an assertion — an unused parameter (and the matching lint warning) means the parameterization is decorative.
+7. For schema/migration features, diff constraint categories (indexes, unique constraints, foreign keys, defaults) between the ORM schema and the raw migration SQL, one category at a time — fixing one category is not evidence the sibling category was fixed too.
+8. Only after all of the above: delete the review file (if correct) or file a `BUGS/BUG0XX-*.md` report (if not), quoting the exact command/grep output that proves the gap, not just a description of it.
+
+**Rule:** Treat "all four commands passed" and "every acceptance criterion is actually met" as two separate claims that must be independently verified. The first is cheap to check and was already true for all five buggy features above. The second requires reading the acceptance criteria line by line against the real code and is the only thing that actually justifies deleting a review file or moving a feature out of the queue.

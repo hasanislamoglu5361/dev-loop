@@ -77,7 +77,27 @@ coding:
     const configPath = path.join(projectDir, 'dev-loop.yaml');
     await fs.writeFile(configPath, 'coding:\n  primary: [');
 
-    await expect(loadConfig({ projectDir })).rejects.toThrow(/Invalid dev-loop.yaml syntax/);
+    await expect(loadConfig({ projectDir })).rejects.toThrow(/Invalid YAML syntax/);
+  });
+
+  it('includes the resolved config path in a syntax error, even for a custom configPath (BUG036)', async () => {
+    const projectDir = await tempProjectDir();
+    const customPath = path.join(projectDir, 'custom-config.yaml');
+    await fs.writeFile(customPath, 'coding:\n  primary: [');
+
+    const escapedPath = customPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    await expect(loadConfig({ projectDir, configPath: customPath }))
+      .rejects.toThrow(new RegExp(escapedPath));
+  });
+
+  it('includes the resolved config path in a validation error, even for a custom configPath (BUG036)', async () => {
+    const projectDir = await tempProjectDir();
+    const customPath = path.join(projectDir, 'custom-config.yaml');
+    await fs.writeFile(customPath, 'ui:\n  port: "not-a-number"\n');
+
+    const escapedPath = customPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    await expect(loadConfig({ projectDir, configPath: customPath, invalidConfig: 'throw' }))
+      .rejects.toThrow(new RegExp(escapedPath));
   });
 
   it('can intentionally warn and default for compatibility mode', async () => {

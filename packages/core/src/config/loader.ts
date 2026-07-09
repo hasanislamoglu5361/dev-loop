@@ -31,8 +31,8 @@ export function interpolateEnv(value: string): string {
   });
 }
 
-function parseYamlConfig(rawContent: string): Record<string, unknown> {
-  return parseYamlObject(rawContent);
+function parseYamlConfig(rawContent: string, filePath?: string): Record<string, unknown> {
+  return parseYamlObject(rawContent, filePath);
 }
 
 /** Load and validate dev-loop.yaml configuration from the given directory */
@@ -53,7 +53,7 @@ export async function loadConfig(
   }
 
   const rawContent = fs.readFileSync(filePath, 'utf-8');
-  const parsed = parseYamlObject(rawContent);
+  const parsed = parseYamlObject(rawContent, filePath);
   const interpolated = interpolateConfig(parsed, {
     env,
     onWarning: options.onWarning,
@@ -75,9 +75,9 @@ export async function loadConfig(
   }
 
   throw new ConfigError(
-    'dev-loop.yaml failed validation.',
+    `Config at ${filePath} failed validation.`,
     'Fix the reported config keys and run the command again.',
-    { issues: validated.error.errors },
+    { path: filePath, issues: validated.error.errors },
   );
 }
 
@@ -246,6 +246,30 @@ observability:
   return configPath;
 }
 
+/** Expand dot-notation keys like "a.b.c" into nested objects { a: { b: { c } } }. */
+function expandDotNotation(obj: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(obj)) {
+    if (typeof key === 'string' && key.includes('.')) {
+      const parts = key.split('.');
+      let current = result;
+      for (let i = 0; i < parts.length - 1; i += 1) {
+        const part = parts[i];
+        if (!current[part] || typeof current[part] !== 'object' || Array.isArray(current[part])) {
+          current[part] = {};
+        }
+        current = current[part] as Record<string, unknown>;
+      }
+      current[parts[parts.length - 1]] = value;
+    } else {
+      result[key] = value;
+    }
+  }
+
+  return result;
+}
+
 /** Write updated config values back to dev-loop.yaml */
 export async function saveConfig(
   projectDir: string = process.cwd(),
@@ -253,10 +277,13 @@ export async function saveConfig(
 ): Promise<void> {
   const configPath = path.join(projectDir, 'dev-loop.yaml');
   const rawExisting = fs.existsSync(configPath)
-    ? parseYamlConfig(fs.readFileSync(configPath, 'utf-8'))
+    ? parseYamlConfig(fs.readFileSync(configPath, 'utf-8'), configPath)
     : {};
   const base = mergeDefaults(ConfigSchema.parse({}), rawExisting);
-  const merged = mergeDefaults(base, updates);
+
+  // Expand dot-notation keys into nested objects before merging.
+  const expandedUpdates = expandDotNotation(updates);
+  const merged = mergeDefaults(base, expandedUpdates);
   const validated = ConfigSchema.parse(merged);
 
   writeYamlFile(configPath, validated);
