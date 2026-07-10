@@ -10,6 +10,7 @@ import { OpenAIProvider } from '../models/providers/openai.js';
 import { OpenRouterProvider } from '../models/providers/openrouter.js';
 import { AnthropicProvider } from '../models/providers/anthropic.js';
 import { createVerifier } from '../models/verifier/factory.js';
+import { PolicyVerifier } from '../models/verifier/policy.js';
 import { createTestRunner } from './test-runner.js';
 import { generateCodeMap } from '../context/code-map.js';
 import { runProcess } from '../utils/process.js';
@@ -217,12 +218,30 @@ function createConfiguredVerifier(
   checkpointDir: string,
   projectDir: string,
 ) {
-  if (config.verifier.provider === 'api') {
-    return createVerifier({ kind: 'api-verifier', options: { provider, model } });
-  }
+  const primary = createVerifierAdapter(config.verifier.provider, provider, model, checkpointDir, projectDir);
+  const rotations = config.verifier.rotation.enabled
+    ? config.verifier.rotation.verifiers.flatMap((entry: unknown) => {
+        const kind = typeof entry === 'string' ? entry : (entry as { provider?: unknown })?.provider;
+        return typeof kind === 'string' && ['api', 'claude-cli', 'codex-cli', 'claude-code-cli'].includes(kind)
+          ? [createVerifierAdapter(kind, provider, model, checkpointDir, projectDir)]
+          : [];
+      })
+    : [];
+  if (rotations.length === 0 && !config.verifier.parallel.enabled) return primary;
+  return new PolicyVerifier({
+    verifiers: [primary, ...rotations],
+    strategy: config.verifier.rotation.strategy === 'best-score' ? 'best-score' : 'round-robin',
+    parallel: config.verifier.parallel.enabled,
+    requireAllPass: config.verifier.parallel.require_all_pass,
+    confidenceThreshold: config.verifier.confidence_score.notify_below,
+  });
+}
+
+function createVerifierAdapter(kind: string, provider: ModelProvider, model: string, checkpointDir: string, projectDir: string) {
+  if (kind === 'api') return createVerifier({ kind: 'api-verifier', options: { provider, model } });
   const options = { promptFile: `${checkpointDir}/verifier-prompt.md`, bugsFile: `${projectDir}/.dev-loop/BUGS.md` };
-  if (config.verifier.provider === 'claude-cli') return createVerifier({ kind: 'claude-cli', options });
-  if (config.verifier.provider === 'codex-cli') return createVerifier({ kind: 'codex-cli', options });
+  if (kind === 'claude-cli') return createVerifier({ kind: 'claude-cli', options });
+  if (kind === 'codex-cli') return createVerifier({ kind: 'codex-cli', options });
   return createVerifier({ kind: 'claude-code-cli', options });
 }
 

@@ -3,6 +3,8 @@ export { runCliVerifier, VerifierCliError } from './cli-runner.js';
 export { ClaudeCodeCliVerifier, buildClaudeReviewPrompt } from './claude-code-cli.js';
 export { ClaudeCliVerifier } from './claude-cli.js';
 export { ApiVerifier, buildVerifierPrompt, translateSqlRequestToReport } from './api-verifier.js';
+export { PolicyVerifier } from './policy.js';
+export type { VerifierPolicyOptions } from './policy.js';
 export { CodexCliVerifier } from './codex-cli.js';
 export { createVerifier } from './factory.js';
 export { buildAutoEnrichedSection, enrichFeatureFile } from './enrich.js';
