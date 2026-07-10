@@ -34,7 +34,12 @@ export function AppShell({ dashboard, onAction, actionPending = false, actionErr
         <nav>
           <a href="/">Dashboard</a>
           <a href="/loops">Loops</a>
+          <a href="/models">Models</a>
           <a href="/mcp">MCP</a>
+          <a href="/quality">Quality</a>
+          <a href="/planning">Planning</a>
+          <a href="/benchmarks">Benchmarks</a>
+          <a href="/reports">Reports</a>
           <a href="/settings">Settings</a>
         </nav>
       </header>
