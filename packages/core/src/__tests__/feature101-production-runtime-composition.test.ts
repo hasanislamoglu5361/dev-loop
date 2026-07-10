@@ -8,6 +8,7 @@ import { composeProductionRuntime } from '../runtime/composer.js';
 import { createDefaultConfig, loadConfig } from '../config/loader.js';
 import { readFile } from 'node:fs/promises';
 import type { ModelProvider, ProviderHealth } from '../models/types.js';
+import type { DevLoopConfig } from '../config/schema.js';
 import { existsSync } from 'node:fs';
 
 const tempDirs: string[] = [];
@@ -18,13 +19,13 @@ function makeProject(prefix: string): string {
   return dir;
 }
 
-async function setupProject(prefix: string) {
+async function setupProject(prefix: string): Promise<{ dir: string; config: DevLoopConfig }> {
   const dir = makeProject(prefix);
   const configPath = await createDefaultConfig(dir);
   const config = await loadConfig({ projectDir: dir, configPath });
   // Make every relevant section deterministic + bounded so the composed runtime
   // runs a single, in-process provider for both coding and verification.
-  const deterministic: typeof config = {
+  const deterministic: DevLoopConfig = {
     ...config,
     coding: {
       ...config.coding,
@@ -48,7 +49,7 @@ async function setupProject(prefix: string) {
       ...config.notifications,
       desktop: { ...config.notifications.desktop, enabled: false, events: [] },
     },
-  } as typeof config;
+  } as unknown as DevLoopConfig;
   return { dir, config: deterministic };
 }
 
@@ -215,7 +216,6 @@ describe('FEATURE101 - Production Runtime Composition', () => {
     const result = await runLoop('FEATURE101', {
       projectDir: dir,
       dbPath,
-      checkpointDir,
       config,
       featureSummary: 'Compose production runtime end-to-end',
       dependencies: composed.dependencies,
