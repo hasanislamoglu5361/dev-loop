@@ -577,6 +577,17 @@ export type { RuntimeComposerOptions, RuntimeComposerResult } from './runtime/co
 export { boundedProvider } from './runtime/bounded-provider.js';
 export type { BoundedProvider, BoundedProviderOptions } from './runtime/bounded-provider.js';
 
+export { assessFlakyTests, orderRelatedTests, runTestIntelligence } from './runtime/test-intelligence.js';
+export type {
+  FlakyAssessment,
+  FlakyObservation,
+  GoldenFileExpectation,
+  IntelligenceStatus,
+  MutationConfig,
+  TestIntelligenceRequest,
+  TestIntelligenceResult,
+} from './runtime/test-intelligence.js';
+
 export {
   DEV_LOOP_GITIGNORE_PATTERNS,
   DEV_LOOP_VSCODE_FILES_EXCLUDE,
