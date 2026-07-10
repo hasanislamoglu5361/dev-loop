@@ -862,10 +862,10 @@ async function runConfiguredQuality(projectDir: string): Promise<unknown> {
     projectDir,
     checks,
     thresholds: {
-      coverage: config.quality_gate.checks.test_coverage_min ?? undefined,
+      coverage: config.quality_gate.checks.test_coverage_min || undefined,
       complexityMax: config.quality_gate.checks.complexity_max || undefined,
-      typeCoverage: config.quality_gate.checks.type_coverage_min ?? undefined,
-      mcpScore: config.quality_gate.checks.mcp_score_min ?? undefined,
+      typeCoverage: config.quality_gate.checks.type_coverage_min || undefined,
+      mcpScore: config.quality_gate.checks.mcp_score_min || undefined,
     },
     blockCommitOnFailure: config.quality_gate.block_commit_on_failure,
     checkers: buildProjectQualityCheckers(projectDir),
