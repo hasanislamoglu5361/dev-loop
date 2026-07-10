@@ -3,6 +3,8 @@ import { scanMcpInputForInjection } from '../models/verifier/injection-detector.
 export interface GithubClient {
   createBranch(branch: string): Promise<void>;
   createPullRequest(input: { title: string; head: string; body: string }): Promise<{ url: string }>;
+  findPullRequest?(head: string): Promise<{ url: string } | null>;
+  deleteBranch?(branch: string): Promise<void>;
 }
 
 export interface CreateGithubPullRequestOptions {
@@ -12,6 +14,7 @@ export interface CreateGithubPullRequestOptions {
   title: string;
   summary: string;
   tests: string[];
+  retries?: number;
 }
 
 export interface CreateGithubPullRequestResult {
@@ -36,6 +39,8 @@ export interface ProcessJiraTicketsOptions {
   jira: JiraClient;
   appendTicket(ticket: JiraTicket): Promise<void>;
   collisionCheck(ticket: JiraTicket): Promise<boolean>;
+  signal?: AbortSignal;
+  retries?: number;
 }
 
 export interface ProcessJiraTicketsResult {
@@ -51,12 +56,21 @@ export async function createGithubPullRequest(
     return { created: false, reason: 'GitHub integration disabled.' };
   }
 
-  await options.client.createBranch(options.branch);
-  const pr = await options.client.createPullRequest({
-    title: options.title,
-    head: options.branch,
-    body: buildPullRequestBody(options.summary, options.tests),
-  });
+  const existing = await options.client.findPullRequest?.(options.branch);
+  if (existing) return { created: false, url: existing.url, reason: 'Pull request already exists.' };
+
+  await retry(() => options.client.createBranch(options.branch), options.retries ?? 2);
+  let pr: { url: string };
+  try {
+    pr = await retry(() => options.client.createPullRequest({
+      title: options.title,
+      head: options.branch,
+      body: buildPullRequestBody(options.summary, options.tests),
+    }), options.retries ?? 2);
+  } catch (error) {
+    await options.client.deleteBranch?.(options.branch).catch(() => undefined);
+    throw error;
+  }
 
   return { created: true, url: pr.url };
 }
@@ -67,28 +81,50 @@ export async function processJiraTickets(
   const appended: string[] = [];
   const blocked: string[] = [];
   const collisions: string[] = [];
-  const tickets = await options.jira.pollTickets();
+  throwIfAborted(options.signal);
+  const tickets = await retry(() => options.jira.pollTickets(), options.retries ?? 2, options.signal);
+  const seen = new Set<string>();
 
   for (const ticket of tickets) {
+    throwIfAborted(options.signal);
+    if (seen.has(ticket.id)) continue;
+    seen.add(ticket.id);
+    if (!/^[A-Z][A-Z0-9_]+-\d+$/.test(ticket.id) || !ticket.title?.trim() || typeof ticket.description !== 'string') {
+      blocked.push(ticket.id || '<invalid>');
+      continue;
+    }
     const injection = scanMcpInputForInjection(`${ticket.title}\n${ticket.description}`);
     if (injection.detected) {
       blocked.push(ticket.id);
-      await options.jira.addComment(ticket.id, 'Ticket intake paused: prompt injection risk detected.');
+      await retry(() => options.jira.addComment(ticket.id, 'Ticket intake paused: prompt injection risk detected.'), options.retries ?? 2, options.signal);
       continue;
     }
 
     if (await options.collisionCheck(ticket)) {
       collisions.push(ticket.id);
-      await options.jira.addComment(ticket.id, 'Ticket intake paused: potential work collision detected.');
+      await retry(() => options.jira.addComment(ticket.id, 'Ticket intake paused: potential work collision detected.'), options.retries ?? 2, options.signal);
       continue;
     }
 
-    await options.appendTicket(ticket);
+    await retry(() => options.appendTicket(ticket), options.retries ?? 2, options.signal);
     appended.push(ticket.id);
-    await options.jira.addComment(ticket.id, 'Ticket queued for dev-loop processing.');
+    await retry(() => options.jira.addComment(ticket.id, 'Ticket queued for dev-loop processing.'), options.retries ?? 2, options.signal);
   }
 
   return { appended, blocked, collisions };
+}
+
+async function retry<T>(operation: () => Promise<T>, retries: number, signal?: AbortSignal): Promise<T> {
+  let last: unknown;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    throwIfAborted(signal);
+    try { return await operation(); } catch (error) { last = error; }
+  }
+  throw last;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new Error('Integration operation cancelled.');
 }
 
 function buildPullRequestBody(summary: string, tests: string[]): string {
