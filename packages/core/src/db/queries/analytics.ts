@@ -7,6 +7,7 @@ import { sqlNullable, toSqlSafe } from './sql-values.js';
 
 /** Get cost trend for the last N days */
 export async function getCostTrend(days: number): Promise<{ date: string; totalCostUsd: number }[]> {
+  assertDays(days);
   const db = getDb();
   const stmt = db.prepare(`
     SELECT DATE(created_at) as date, SUM(total_cost_usd) as totalCostUsd
@@ -20,6 +21,7 @@ export async function getCostTrend(days: number): Promise<{ date: string; totalC
 
 /** Get quality trend for the last N days */
 export async function getQualityTrend(days: number): Promise<{ date: string; avgCoverage: number }[]> {
+  assertDays(days);
   const db = getDb();
   const stmt = db.prepare(`
     SELECT DATE(l.created_at) as date, AVG(q.test_coverage_pct) as avgCoverage
@@ -68,11 +70,12 @@ export async function getUncertainReport(): Promise<{ total: number; unresolved:
 export async function getTopErrorPatterns(limit?: number): Promise<Record<string, unknown>[]> {
   const db = getDb();
   const stmt = db.prepare('SELECT * FROM error_patterns ORDER BY seen_count DESC LIMIT ?');
-  return stmt.all(limit || 10) as Record<string, unknown>[];
+  return stmt.all(limit ?? 10) as Record<string, unknown>[];
 }
 
 /** Get recent analytics for executive summary */
 export async function getRecentAnalytics(days: number = 7): Promise<{ totalLoops: number; successRate: number; totalCost: number }> {
+  assertDays(days);
   const db = getDb();
   const row = db.prepare(`
     SELECT COUNT(*) as cnt,
@@ -88,10 +91,12 @@ export async function getRecentAnalytics(days: number = 7): Promise<{ totalLoops
 /** Get comparison report between two date ranges */
 export async function getComparisonReport(params: { from1: string; to1: string; from2: string; to2: string }): Promise<{ period1: { loops: number; cost: number; successRate: number }; period2: { loops: number; cost: number; successRate: number } }> {
   const db = getDb();
+  assertDateRange(params.from1, params.to1);
+  assertDateRange(params.from2, params.to2);
 
   const [p1, p2] = await Promise.all([
-    db.prepare(`SELECT COUNT(*) as loops, SUM(total_cost_usd) as cost, CAST(SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS REAL) / COUNT(*) * 100 as successRate FROM loop_history WHERE created_at BETWEEN ? AND ?`).get(params.from1, params.to1) as { loops: number; cost: number; successRate: number } | undefined,
-    db.prepare(`SELECT COUNT(*) as loops, SUM(total_cost_usd) as cost, CAST(SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS REAL) / COUNT(*) * 100 as successRate FROM loop_history WHERE created_at BETWEEN ? AND ?`).get(params.from2, params.to2) as { loops: number; cost: number; successRate: number } | undefined
+    db.prepare(`SELECT COUNT(*) as loops, COALESCE(SUM(total_cost_usd), 0) as cost, COALESCE(CAST(SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS REAL) / NULLIF(COUNT(*), 0) * 100, 0) as successRate FROM loop_history WHERE created_at BETWEEN ? AND ?`).get(params.from1, params.to1) as { loops: number; cost: number; successRate: number } | undefined,
+    db.prepare(`SELECT COUNT(*) as loops, COALESCE(SUM(total_cost_usd), 0) as cost, COALESCE(CAST(SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS REAL) / NULLIF(COUNT(*), 0) * 100, 0) as successRate FROM loop_history WHERE created_at BETWEEN ? AND ?`).get(params.from2, params.to2) as { loops: number; cost: number; successRate: number } | undefined
   ]);
 
   return {
@@ -103,8 +108,20 @@ export async function getComparisonReport(params: { from1: string; to1: string; 
 /** Get report data for export */
 export async function getReportData(dateRange: { from: string; to: string }): Promise<{ loops: Record<string, unknown>[] }> {
   const db = getDb();
+  assertDateRange(dateRange.from, dateRange.to);
   const stmt = db.prepare(`SELECT * FROM loop_history WHERE created_at BETWEEN ? AND ? ORDER BY created_at DESC`);
   return { loops: stmt.all(dateRange.from, dateRange.to) as Record<string, unknown>[] };
+}
+
+function assertDays(days: number): void {
+  if (!Number.isInteger(days) || days < 0 || days > 3650) throw new Error('days must be an integer between 0 and 3650.');
+}
+
+function assertDateRange(from: string, to: string): void {
+  const fromMs = Date.parse(from);
+  const toMs = Date.parse(to);
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) throw new Error('Report dates must be valid ISO-8601 values.');
+  if (fromMs > toMs) throw new Error('Report start date must not be after end date.');
 }
 
 // ============================================================

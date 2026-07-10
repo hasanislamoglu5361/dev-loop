@@ -4,7 +4,7 @@
 export { detectCostSpike, detectAnomaliesInTrend } from './anomaly.js';
 export type { CostSpikeResult, CostTrendAnomaly } from './anomaly.js';
 
-export { sanitizeExport, exportToCsv, exportToJson } from './export.js';
+export { sanitizeExport, exportToCsv, exportToJson, writeAnalyticsExport } from './export.js';
 export type { ExportOptions } from './export.js';
 
 export { generateExecutiveSummary, buildSummaryFromInput } from './summary.js';

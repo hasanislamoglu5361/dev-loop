@@ -1,6 +1,9 @@
 // packages/core/src/analytics/export.ts
 // CSV and JSON export utilities with secret redaction for analytics data.
 
+import { mkdir, rename, unlink, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+
 export interface ExportOptions {
   /** Columns/keys to include in the export (default: all) */
   columns?: string[];
@@ -90,6 +93,29 @@ export function exportToJson(
   }
 
   return JSON.stringify(escaped, null, 2);
+}
+
+export async function writeAnalyticsExport(
+  filePath: string,
+  data: Record<string, unknown>[],
+  format: 'csv' | 'json',
+  options: ExportOptions = {},
+): Promise<{ filePath: string; format: 'csv' | 'json'; rowCount: number; bytes: number }> {
+  if (path.extname(filePath).toLowerCase() !== `.${format}`) {
+    throw new Error(`Export file extension must be .${format}.`);
+  }
+  const content = format === 'csv' ? exportToCsv(data, options) : exportToJson(data, options);
+  await mkdir(path.dirname(filePath), { recursive: true });
+  const temporary = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
+  try {
+    await writeFile(temporary, content, { encoding: 'utf8', mode: 0o600 });
+    await rename(temporary, filePath);
+  } finally {
+    await unlink(temporary).catch(error => {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    });
+  }
+  return { filePath, format, rowCount: data.length, bytes: Buffer.byteLength(content) };
 }
 
 /**
