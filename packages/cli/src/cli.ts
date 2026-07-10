@@ -749,7 +749,7 @@ function createWorkflows(overrides: CliWorkflows = {}): Required<CliWorkflows> {
       if (request.dryRun) {
         return { dryRun: true, featureId: request.featureId, projectDir: request.projectDir };
       }
-      return withProductionRuntime(request, dependencies => runLoop(request.featureId, { projectDir: request.projectDir, dependencies }));
+      return withProductionRuntime(request, (dependencies, config) => runLoop(request.featureId, { projectDir: request.projectDir, config, dependencies }));
     }),
     verify: overrides.verify ?? runConfiguredVerifier,
     test: overrides.test ?? (async request => runConfiguredTests(request.projectDir)),
@@ -770,19 +770,22 @@ function createWorkflows(overrides: CliWorkflows = {}): Required<CliWorkflows> {
         modelOverride: `${selected.provider}/${selected.model}`,
         ...(typeof verifier?.provider === 'string' ? { verifierOverride: verifier.provider } : {}),
       };
-      return withProductionRuntime(restoredRequest, dependencies => resumeLoop({ projectDir: request.projectDir, loopId, turn: request.turn, dependencies }));
+      return withProductionRuntime(restoredRequest, (dependencies, config) => resumeLoop({ projectDir: request.projectDir, loopId, turn: request.turn, config, dependencies }));
     }),
     replay: overrides.replay ?? (async request => {
       if (request.loopId === undefined) throw new Error('replay requires a loop ID.');
       if (request.dryRun) return replayLoop({ projectDir: request.projectDir, sourceLoopId: request.loopId, dryRun: true });
-      return withProductionRuntime(request, dependencies => replayLoop({ projectDir: request.projectDir, sourceLoopId: request.loopId as number, dependencies }));
+      return withProductionRuntime(request, (dependencies, config) => replayLoop({ projectDir: request.projectDir, sourceLoopId: request.loopId as number, config, dependencies }));
     }),
   };
 }
 
 async function withProductionRuntime<T>(
   request: CliWorkflowRequest,
-  run: (dependencies: Awaited<ReturnType<typeof composeProductionRuntime>>['dependencies']) => Promise<T>,
+  run: (
+    dependencies: Awaited<ReturnType<typeof composeProductionRuntime>>['dependencies'],
+    config: DevLoopConfig,
+  ) => Promise<T>,
 ): Promise<T> {
   const loaded = await loadConfig({ projectDir: request.projectDir });
   const config: DevLoopConfig = structuredClone(loaded);
@@ -804,7 +807,7 @@ async function withProductionRuntime<T>(
     dbPath: path.join(runtime.runtimeRoot, 'dev-loop.db'),
   });
   try {
-    return await run(composed.dependencies);
+    return await run(composed.dependencies, config);
   } finally {
     await composed.cleanup();
   }

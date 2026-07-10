@@ -20,13 +20,20 @@ import { scanSecrets } from '../utils/secret-scanner.js';
 import { detectUncertainInPath } from '../models/verifier/uncertain.js';
 import { measureProjectComplexity } from './complexity.js';
 import { getMcpScores, saveQualityHistory } from '../db/queries/index.js';
+import { boundedProvider, type BoundedProvider } from './bounded-provider.js';
 
 export interface RuntimeComposerOptions {
   projectDir: string;
   config: DevLoopConfig;
   checkpointDir: string;
   dbPath: string;
+  /** Optional override for providers used by the composer (otherwise it builds
+   *  adapters based on `config.coding.primary.provider`). Every provider ends
+   *  up wrapped in a `boundedProvider` so the produced runtime always enforces
+   *  hard timeouts on network calls. */
   providers?: ModelProvider[];
+  /** Optional per-call timeout override for the production adapters. */
+  providerTimeoutMs?: number;
 }
 
 export interface RuntimeComposerResult {
@@ -37,6 +44,8 @@ export interface RuntimeComposerResult {
   successHooks: LoopSuccessHooks;
   cost: CostTracker;
   cleanup: () => Promise<void>;
+  /** Bounded adapters the runtime owns; tests can introspect generation counts. */
+  boundedProviders: BoundedProvider[];
 }
 
 function buildContextFromRequest(r: { featureId: string; loopId: number; turn: number; config: DevLoopConfig; bugs: unknown[]; focusFiles: string[] }, projectDir: string): string {
@@ -57,9 +66,16 @@ export async function composeProductionRuntime(options: RuntimeComposerOptions):
   const { config, projectDir, checkpointDir } = options;
   initDatabase(options.dbPath);
   const registry = new ModelRegistry();
-  const providers = options.providers ?? createConfiguredProviders(config);
-  providers.forEach(provider => registry.register(provider));
-  const selected = await selectConfiguredModel(config, providers);
+  const rawProviders = options.providers ?? createConfiguredProviders(config);
+  // Wrap every provider with a bounded adapter so the runtime cannot leak
+  // unbounded network calls to LM Studio / Ollama / OpenAI / Anthropic / etc.
+  // The composer owns these adapters and exposes them on the result so callers
+  // can inspect usage and so the cleanup hook can dispose them deterministically.
+  const bounded = rawProviders.map(provider => boundedProvider(provider, {
+    timeoutMs: options.providerTimeoutMs,
+  }));
+  bounded.forEach(provider => registry.register(provider));
+  const selected = await selectConfiguredModel(config, bounded);
   const codingProvider = selected.provider;
   const codingModel = selected.model;
   const verifierProvider = config.verifier?.provider ?? 'claude-code-cli';
@@ -136,6 +152,7 @@ export async function composeProductionRuntime(options: RuntimeComposerOptions):
 
   const cleanup = async (): Promise<void> => {
     cost.reset();
+    await Promise.all(bounded.map(provider => provider.dispose()).concat(Promise.resolve()));
     closeDatabase();
   };
 
@@ -147,6 +164,7 @@ export async function composeProductionRuntime(options: RuntimeComposerOptions):
     successHooks,
     cost,
     cleanup,
+    boundedProviders: bounded,
   };
 }
 

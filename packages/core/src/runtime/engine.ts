@@ -42,6 +42,9 @@ export interface LoopEngineDependencies {
 export interface RunLoopOptions {
   projectDir: string;
   configPath?: string;
+  /** Pre-built config to use instead of reloading from disk (e.g. the config a
+   *  runtime composer already resolved, including CLI model/verifier overrides). */
+  config?: DevLoopConfig;
   dbPath?: string;
   featureSummary?: string;
   featureKeywords?: string;
@@ -227,7 +230,7 @@ export async function runLoop(
   const now = options.dependencies?.now ?? Date.now;
   const started = now();
   const runtime = initProjectRuntime(options.projectDir);
-  const config = await loadConfig({
+  const config = options.config ?? await loadConfig({
     projectDir: options.projectDir,
     configPath: options.configPath,
   });
@@ -342,7 +345,7 @@ export async function resumeLoop(options: ResumeLoopOptions): Promise<RunLoopIni
     throw new Error('Resume requires production loop dependencies.');
   }
 
-  const config = await loadConfig({ projectDir: options.projectDir, configPath: options.configPath });
+  const config = options.config ?? await loadConfig({ projectDir: options.projectDir, configPath: options.configPath });
   const cost = new CostTracker();
   cost.restore(
     checkpoint.state.totalInputTokens,

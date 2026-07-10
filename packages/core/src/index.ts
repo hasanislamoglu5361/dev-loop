@@ -566,6 +566,9 @@ export type {
 export { composeProductionRuntime } from './runtime/composer.js';
 export type { RuntimeComposerOptions, RuntimeComposerResult } from './runtime/composer.js';
 
+export { boundedProvider } from './runtime/bounded-provider.js';
+export type { BoundedProvider, BoundedProviderOptions } from './runtime/bounded-provider.js';
+
 export {
   DEV_LOOP_GITIGNORE_PATTERNS,
   DEV_LOOP_VSCODE_FILES_EXCLUDE,
@@ -573,3 +576,4 @@ export {
   mergeGitignore,
   mergeVSCodeSettings,
 } from './context/init-editor-support.js';
+
