@@ -321,8 +321,9 @@ export {
 } from './context/init-runtime.js';
 export type { InitResult } from './context/init-runtime.js';
 
-export { discoverCodeMapSourceFiles, generateCodeMap } from './context/code-map.js';
+export { discoverCodeMapSourceFiles, generateCodeMap, renderMermaidArchitecture } from './context/code-map.js';
 export type {
+  ArchitectureEdge,
   CodeMapFileInfo,
   GenerateCodeMapOptions,
   GenerateCodeMapResult,

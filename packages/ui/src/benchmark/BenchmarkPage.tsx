@@ -1,4 +1,5 @@
 import React from 'react';
+import { buildBenchmarkChartData } from './chart.js';
 
 interface BenchmarkResult {
   id: string;
@@ -35,6 +36,7 @@ export function BenchmarkPage({ results = [] }: { results?: BenchmarkResult[] })
       </div>
     );
   }
+  const chart = buildBenchmarkChartData(results);
 
   return (
     <div className="benchmark-page">
@@ -68,17 +70,37 @@ export function BenchmarkPage({ results = [] }: { results?: BenchmarkResult[] })
         </tbody>
       </table>
 
+      <section className="benchmark-chart" aria-labelledby="benchmark-chart-title">
+        <h3 id="benchmark-chart-title">Tokens per second comparison</h3>
+        <svg viewBox={`0 0 640 ${Math.max(120, chart.length * 52 + 36)}`} role="img" aria-describedby="benchmark-chart-description">
+          <desc id="benchmark-chart-description">Horizontal bar chart comparing benchmark throughput. Missing, negative, and non-finite values are displayed as zero.</desc>
+          {chart.map((item, index) => {
+            const y = 18 + index * 52; const width = Math.round(item.normalized * 430);
+            return <g key={item.id} role="listitem" tabIndex={0} aria-label={`${item.label}: ${item.value} tokens per second`}>
+              <text x="0" y={y + 17}>{item.label}</text>
+              <rect x="170" y={y} width={Math.max(1, width)} height="24" rx="4" className="chart-bar" aria-hidden="true" />
+              <text x={180 + width} y={y + 17}>{item.value}</text>
+            </g>;
+          })}
+        </svg>
+      </section>
+
       {results.length > 1 && (
         <section className="benchmark-summary">
           <h3>SUMMARY</h3>
           <div className="summary-grid">
             <SummaryItem label="Best Tokens/s" value={Math.round(Math.max(...results.map(r => r.tokensPerSecond ?? 0)))} />
-            <SummaryItem label="Lowest Cost (USD)" value={`$${(Math.min(...results.map(r => r.costUsd ?? Infinity))).toFixed(4)}`} />
+            <SummaryItem label="Lowest Cost (USD)" value={lowestCost(results)} />
           </div>
         </section>
       )}
     </div>
   );
+}
+
+function lowestCost(results: BenchmarkResult[]): string {
+  const values = results.map(result => result.costUsd).filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0);
+  return values.length ? `$${Math.min(...values).toFixed(4)}` : '-';
 }
 
 function SummaryItem({ label, value }: { label: string; value: number | string }): ReturnType<typeof React.createElement> {

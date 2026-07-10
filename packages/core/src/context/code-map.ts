@@ -19,6 +19,20 @@ export interface GenerateCodeMapResult {
   content: string;
 }
 
+export interface ArchitectureEdge { from: string; to: string }
+
+export function renderMermaidArchitecture(files: string[], edges: ArchitectureEdge[]): string {
+  const sortedFiles = [...new Set(files)].sort();
+  const identifiers = new Map(sortedFiles.map((file, index) => [file, `n${index + 1}`]));
+  const lines = ['flowchart LR'];
+  for (const file of sortedFiles) lines.push(`  ${identifiers.get(file)}["${file.replace(/["\\]/g, '')}"]`);
+  for (const edge of edges.slice().sort((a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to))) {
+    const from = identifiers.get(edge.from); const to = identifiers.get(edge.to);
+    if (from && to) lines.push(`  ${from} --> ${to}`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
 const DEFAULT_SOURCE_PATTERNS = [
   '**/*.{ts,tsx,js,jsx}',
 ];

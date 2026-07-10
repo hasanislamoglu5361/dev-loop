@@ -3,6 +3,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { RoutedApplication } from './Router.js';
 import { queryClient } from './queryClient.js';
+import './styles.css';
 
 function App(): ReturnType<typeof React.createElement> {
   return (

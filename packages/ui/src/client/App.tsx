@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 interface DashboardMetrics {
   activeLoops: number;
@@ -27,8 +27,11 @@ interface AppShellProps {
 }
 
 export function AppShell({ dashboard, onAction, actionPending = false, actionError }: AppShellProps): ReturnType<typeof React.createElement> {
+  const storage = typeof globalThis.localStorage?.getItem === 'function' ? globalThis.localStorage : undefined;
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => storage?.getItem('dev-loop-theme') === 'dark' ? 'dark' : 'light');
+  const toggleTheme = () => { const next = theme === 'light' ? 'dark' : 'light'; setTheme(next); storage?.setItem('dev-loop-theme', next); };
   return (
-    <div className="dev-loop-app">
+    <div className="dev-loop-app" data-theme={theme}>
       <header className="dev-loop-header">
         <h1>dev-loop</h1>
         <nav>
@@ -42,6 +45,7 @@ export function AppShell({ dashboard, onAction, actionPending = false, actionErr
           <a href="/reports">Reports</a>
           <a href="/settings">Settings</a>
         </nav>
+        <button type="button" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`} onClick={toggleTheme}>Theme: {theme}</button>
       </header>
       <main className="dev-loop-main">
         <section className="dashboard-status">
