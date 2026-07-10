@@ -542,6 +542,9 @@ export type {
   McpStartResult,
 } from './runtime/mcp-manager.js';
 
+export { McpProtocolClient } from './runtime/mcp-client.js';
+export type { McpClientLog, McpProtocolClientOptions, McpTool, McpTransport } from './runtime/mcp-client.js';
+
 export { McpSandbox } from './runtime/mcp-sandbox.js';
 export type {
   McpSandboxOptions,
