@@ -2,6 +2,8 @@
 // Voice transcription wrapper with graceful unavailable dependency handling.
 // Uses lazy loading for optional dependencies like Whisper.
 
+import { readFile, rm, stat } from 'node:fs/promises';
+
 export class VoiceDependencyUnavailableError extends Error {
   constructor() {
     super('Voice transcription service is not available. Please check your configuration.');
@@ -16,6 +18,36 @@ export interface TranscribeResult {
 
 export interface VoiceTranscriber {
   transcribe(audioBuffer: Buffer): Promise<TranscribeResult> | TranscribeResult;
+}
+
+export interface ProcessVoiceInputOptions {
+  enabled: boolean;
+  file?: string;
+  record?: () => Promise<{ file: string; temporary: true }>;
+  maxBytes?: number;
+  confirm: (message: string) => boolean | Promise<boolean>;
+  transcriber?: VoiceTranscriber;
+}
+
+export interface ProcessVoiceInputResult extends TranscribeResult { source: 'file' | 'recording'; bytes: number; confirmed: true }
+
+export async function processVoiceInput(options: ProcessVoiceInputOptions): Promise<ProcessVoiceInputResult> {
+  if (!options.enabled) throw new Error('Voice commands are disabled in configuration.');
+  if (Boolean(options.file) === Boolean(options.record)) throw new Error('Provide exactly one voice input: file or recording.');
+  const recording = options.record ? await options.record() : undefined;
+  const file = options.file ?? recording!.file;
+  try {
+    const info = await stat(file);
+    const maxBytes = options.maxBytes ?? 25 * 1024 * 1024;
+    if (!info.isFile() || info.size === 0) throw new Error('Audio input must be a non-empty file.');
+    if (info.size > maxBytes) throw new Error(`Audio input exceeds the ${maxBytes} byte limit.`);
+    if (!await options.confirm(`Transcribe and use ${recording ? 'recorded' : 'selected'} audio (${info.size} bytes)?`)) throw new Error('Voice command cancelled by user.');
+    const result = await transcribeAudio(await readFile(file), options.transcriber);
+    if (!result.text.trim()) throw new Error('Transcription was empty.');
+    return { ...result, text: result.text.trim(), source: recording ? 'recording' : 'file', bytes: info.size, confirmed: true };
+  } finally {
+    if (recording?.temporary) await rm(recording.file, { force: true }).catch(() => undefined);
+  }
 }
 
 /**

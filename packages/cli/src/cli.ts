@@ -488,9 +488,26 @@ export function createCli(options: CreateCliOptions = {}): Command {
 
   program
     .command('voice [text]')
-    .description('Process a voice command transcript')
+    .description('Process a transcript or transcribe a bounded audio file')
     .option('-p, --project-dir <dir>', 'project directory', process.cwd())
-    .action(async (text: string | undefined, commandOptions: { projectDir: string }) => {
+    .option('--file <audio>', 'audio file to transcribe')
+    .option('--max-bytes <bytes>', 'maximum accepted audio size', value => Number(value), 25 * 1024 * 1024)
+    .option('--yes', 'confirm that the transcript may be used', false)
+    .action(async (text: string | undefined, commandOptions: { projectDir: string; file?: string; maxBytes: number; yes: boolean }) => {
+      if (commandOptions.file) {
+        const config = await loadConfig({ projectDir: commandOptions.projectDir });
+        const { processVoiceInput } = await import('@dev-loop/core');
+        const result = await processVoiceInput({
+          enabled: config.voice.enabled,
+          file: commandOptions.file,
+          maxBytes: commandOptions.maxBytes,
+          confirm: () => commandOptions.yes,
+        });
+        console.log(formatCommandResult(await dataApi.command('voice', { text: result.text, audio: { source: result.source, bytes: result.bytes, language: result.language }, projectDir: commandOptions.projectDir })));
+        return;
+      }
+      if (!text) throw new Error('voice requires transcript text or --file <audio>.');
+      if (!commandOptions.yes) throw new Error('Voice command requires explicit --yes confirmation.');
       console.log(formatCommandResult(await dataApi.command('voice', { text, projectDir: commandOptions.projectDir })));
     });
 

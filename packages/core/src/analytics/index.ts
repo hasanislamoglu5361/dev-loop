@@ -10,5 +10,5 @@ export type { ExportOptions } from './export.js';
 export { generateExecutiveSummary, buildSummaryFromInput } from './summary.js';
 export type { ExecutiveSummary, SummaryInput } from './summary.js';
 
-export { transcribeAudio, isVoiceAvailable, VoiceDependencyUnavailableError } from './voice.js';
-export type { TranscribeResult } from './voice.js';
+export { transcribeAudio, isVoiceAvailable, processVoiceInput, VoiceDependencyUnavailableError } from './voice.js';
+export type { ProcessVoiceInputOptions, ProcessVoiceInputResult, TranscribeResult, VoiceTranscriber } from './voice.js';
