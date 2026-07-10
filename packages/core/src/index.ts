@@ -7,6 +7,8 @@ export {
 } from './config/loader.js';
 export type { ConfigWarning, LoadConfigOptions } from './config/loader.js';
 export type { DevLoopConfig } from './config/schema.js';
+export { CONFIG_SECTION_CONSUMERS, getConfigConsumers } from './config/consumers.js';
+export type { ConfigConsumer, ConfigSection } from './config/consumers.js';
 
 export { checkConfigFile, safeParseWithMessage } from './config/errors.js';
 export type { ConfigCheckResult, SafeParseResult } from './config/errors.js';
