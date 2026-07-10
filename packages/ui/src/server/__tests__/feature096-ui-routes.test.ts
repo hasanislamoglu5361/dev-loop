@@ -75,7 +75,11 @@ describe('FEATURE096 - Web UI API Routes and WebSocket', () => {
       ws.once('message', data => resolve(data.toString()));
     });
 
-    expect(JSON.parse(message)).toEqual({ type: 'connected' });
+    expect(JSON.parse(message)).toMatchObject({
+      version: 1,
+      sequence: 1,
+      event: { type: 'connected', state: 'ready' },
+    });
     ws.close();
     await app.close();
     expect(realtime.listenerCount('event')).toBe(0);

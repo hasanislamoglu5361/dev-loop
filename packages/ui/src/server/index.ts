@@ -84,7 +84,7 @@ export function createUiServer(_options: UiServerOptions = {}): FastifyInstance 
   app.get('/api/dashboard', async () => api.dashboard());
   app.get('/api/loops', async () => api.loops());
   app.get('/api/loops/:id/turns', async request => {
-    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const params = z.object({ id: z.string().regex(/^\d+$/) }).parse(request.params);
     return api.turns(params.id);
   });
   app.get('/api/models', async () => api.models());
@@ -92,7 +92,7 @@ export function createUiServer(_options: UiServerOptions = {}): FastifyInstance 
   app.get('/api/mcp', async () => api.mcp());
   app.get('/api/uncertain', async () => api.uncertain());
   app.post('/api/uncertain/:id/resolve', async (request, reply) => {
-    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const params = z.object({ id: z.string().min(1).max(100) }).parse(request.params);
     const body = z.object({ resolution: z.string().min(1) }).safeParse(request.body);
     if (!body.success) {
       return reply.status(400).send({ error: 'Invalid request body.' });
@@ -105,9 +105,11 @@ export function createUiServer(_options: UiServerOptions = {}): FastifyInstance 
   app.get('/api/notifications', async () => api.notifications());
   app.get('/api/config', async () => redactSecrets(await api.config()));
   app.post('/api/loop-control/:action', async request => {
-    const params = z.object({ action: z.string().min(1) }).parse(request.params);
+    const params = z.object({ action: z.enum(['run', 'verify', 'build', 'pause', 'resume', 'cancel']) }).parse(request.params);
     const body = z.record(z.unknown()).default({}).parse(request.body ?? {});
-    return api.loopControl(params.action, body);
+    const operationId = `op-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+    const result = await api.loopControl(params.action, body);
+    return { operationId, action: params.action, status: 'completed', result };
   });
   app.post('/api/voice', async request => {
     const body = z.record(z.unknown()).default({}).parse(request.body ?? {});
@@ -116,6 +118,11 @@ export function createUiServer(_options: UiServerOptions = {}): FastifyInstance 
   app.post('/api/ratings', async request => {
     const body = z.record(z.unknown()).default({}).parse(request.body ?? {});
     return api.ratings(body);
+  });
+
+  app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof z.ZodError) return reply.status(400).send({ error: 'Invalid request.', issues: error.issues.map(issue => ({ path: issue.path.join('.'), code: issue.code })) });
+    return reply.status(500).send({ error: 'Internal Server Error' });
   });
 
   app.get('/ws', async (_request, reply) => {
@@ -314,15 +321,17 @@ interface WsConnection {
 }
 
 function bindWsConnection(ws: WsConnection, realtime?: EventEmitter): void {
+  let sequence = 0;
   const sendEvent = (event: unknown): void => {
-    ws.send(JSON.stringify(event));
+    sequence += 1;
+    ws.send(JSON.stringify({ version: 1, sequence, timestamp: new Date().toISOString(), event }));
   };
 
   realtime?.on('event', sendEvent);
   ws.on('close', () => {
     realtime?.off('event', sendEvent);
   });
-  sendEvent({ type: 'connected' });
+  sendEvent({ type: 'connected', state: 'ready' });
 }
 
 function installWebSocketServer(app: FastifyInstance, realtime?: EventEmitter): void {
