@@ -244,6 +244,49 @@ export async function createSuccessPattern(params: {
   return { id: result.lastInsertRowid as number };
 }
 
+/** Record one verified outcome atomically and deduplicate retries by loop id. */
+export function recordVerifiedLearning(params: {
+  loopId: number;
+  model: string;
+  provider?: string;
+  featureId: string;
+  turns: number;
+  fallbackUsed: boolean;
+}): { id: number; created: boolean } {
+  const db = getDb();
+  return db.transaction(() => {
+    const marker = `loop:${params.loopId}`;
+    const existing = db.prepare('SELECT id FROM success_patterns WHERE success_description = ?').get(marker) as { id: number } | undefined;
+    if (existing) return { id: existing.id, created: false };
+    const result = db.prepare(`
+      INSERT INTO success_patterns (
+        model, provider, feature_keywords, feature_type, success_description,
+        turns_to_complete, mcp_used
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      params.model,
+      sqlNullable(params.provider),
+      sqlJsonString([params.featureId]),
+      params.fallbackUsed ? 'fallback_verified' : 'verified',
+      marker,
+      params.turns,
+      sqlJsonString([]),
+    );
+    return { id: Number(result.lastInsertRowid), created: true };
+  })();
+}
+
+export function getLearningContext(model: string, featureId: string, limit = 5): string[] {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT feature_type, turns_to_complete, feature_keywords
+    FROM success_patterns
+    WHERE model = ? AND feature_keywords LIKE ?
+    ORDER BY id DESC LIMIT ?
+  `).all(model, `%${featureId}%`, limit) as Array<{ feature_type: string | null; turns_to_complete: number | null }>;
+  return rows.map(row => `${row.feature_type ?? 'verified'} completed in ${row.turns_to_complete ?? 0} turn(s)`);
+}
+
 /** Get distinct models observed in learning patterns */
 export async function getDistinctModels(): Promise<string[]> {
   const db = getDb();

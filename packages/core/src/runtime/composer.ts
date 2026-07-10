@@ -20,7 +20,7 @@ import type { QualityCheckConfig, QualityChecker, QualityCheckResult } from './q
 import { scanSecrets } from '../utils/secret-scanner.js';
 import { detectUncertainInPath } from '../models/verifier/uncertain.js';
 import { measureProjectComplexity } from './complexity.js';
-import { getMcpScores, saveQualityHistory } from '../db/queries/index.js';
+import { getLearningContext, getMcpScores, recordVerifiedLearning, saveQualityHistory } from '../db/queries/index.js';
 import { boundedProvider, type BoundedProvider } from './bounded-provider.js';
 
 export interface RuntimeComposerOptions {
@@ -49,13 +49,14 @@ export interface RuntimeComposerResult {
   boundedProviders: BoundedProvider[];
 }
 
-function buildContextFromRequest(r: { featureId: string; loopId: number; turn: number; config: DevLoopConfig; bugs: unknown[]; focusFiles: string[] }, projectDir: string): string {
+function buildContextFromRequest(r: { featureId: string; loopId: number; turn: number; config: DevLoopConfig; bugs: unknown[]; focusFiles: string[] }, projectDir: string, learning: string[] = []): string {
   return [
     '# Loop ' + r.loopId + ' Turn ' + r.turn,
     'Feature: ' + r.featureId,
     'Project: ' + projectDir,
     'Bugs: ' + r.bugs.length,
     'Files: ' + r.focusFiles.join(','),
+    ...(learning.length ? ['Learned outcomes:', ...learning.map(item => `- ${item}`)] : []),
   ].join('\n');
 }
 
@@ -93,7 +94,7 @@ export async function composeProductionRuntime(options: RuntimeComposerOptions):
   const dependencies: LoopEngineDependencies = {
     selectModel: async () => selectedModel,
     selectVerifier: async () => selectedVerifier,
-    buildContext: async (r) => buildContextFromRequest(r, projectDir),
+    buildContext: async (r) => buildContextFromRequest(r, projectDir, getLearningContext(codingModel, r.featureId)),
     generate: async (r) => provider.generate({
       model: r.model.model,
       messages: [{ role: 'user', content: r.context }],
@@ -148,6 +149,16 @@ export async function composeProductionRuntime(options: RuntimeComposerOptions):
 
   const successHooks: LoopSuccessHooks = {
     updateCodeMap: async () => { await generateCodeMap({ projectDir }); },
+    recordLearning: async context => {
+      recordVerifiedLearning({
+        loopId: context.loopId,
+        model: codingModel,
+        provider: codingProvider,
+        featureId: context.featureId,
+        turns: context.turns.length,
+        fallbackUsed: context.fallbackUsed,
+      });
+    },
   };
   dependencies.successHooks = successHooks;
 
