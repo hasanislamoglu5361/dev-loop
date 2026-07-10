@@ -292,8 +292,10 @@ export const auditLog = sqliteTable('audit_log', {
   diffSizeLines: integer('diff_size_lines'),
   commitHash: text('commit_hash'),
   signature: text('signature'),
+  payload: text('payload'),
+  previousSignature: text('previous_signature'),
   createdAt: createdAt(),
-});
+}, table => ({ loopCreatedIdx: index('idx_audit_loop_created').on(table.loopId, table.createdAt) }));
 
 export const planningHistory = sqliteTable('planning_history', {
   id: integer('id').primaryKey({ autoIncrement: true }),

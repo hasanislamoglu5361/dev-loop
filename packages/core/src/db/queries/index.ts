@@ -15,6 +15,7 @@ export * from './notifications.js';
 export * from './planning.js';
 export * from './flaky-tests.js';
 export * from './analytics.js';
+export * from './audit.js';
 export * from './maintenance.js';
 
 // Re-export shared helpers for internal use and tests that may import them directly

@@ -16,6 +16,7 @@ const migrations: readonly Migration[] = [
   { version: 1, name: '001_initial_schema', up: applyMigration1 },
   { version: 2, name: '002_replay_provenance', up: applyMigration2 },
   { version: 3, name: '003_quality_mcp_score', up: applyMigration3 },
+  { version: 4, name: '004_audit_chain', up: applyMigration4 },
 ];
 
 /** Run all pending migrations against the database */
@@ -292,4 +293,11 @@ function applyMigration3(db: Database.Database): void {
   if (!columns.some(column => column.name === 'mcp_score')) {
     db.exec('ALTER TABLE quality_history ADD COLUMN mcp_score REAL');
   }
+}
+
+function applyMigration4(db: Database.Database): void {
+  const columns = db.prepare('PRAGMA table_info(audit_log)').all() as Array<{ name: string }>;
+  if (!columns.some(column => column.name === 'payload')) db.exec('ALTER TABLE audit_log ADD COLUMN payload TEXT');
+  if (!columns.some(column => column.name === 'previous_signature')) db.exec('ALTER TABLE audit_log ADD COLUMN previous_signature TEXT');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_audit_loop_created ON audit_log(loop_id, created_at)');
 }
