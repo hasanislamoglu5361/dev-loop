@@ -20,6 +20,7 @@ export async function saveQualityHistory(
     duplicateCodePct?: number;
     techDebtMinutes?: number;
     lintErrors?: number;
+    mcpScore?: number;
     gatePassed?: boolean;
   }
 ): Promise<{ id: number }> {
@@ -29,8 +30,8 @@ export async function saveQualityHistory(
     INSERT INTO quality_history (
       loop_id, test_coverage_pct, complexity_score, type_coverage_pct, mutation_score,
       secrets_found, vulnerabilities_critical, vulnerabilities_high, dead_code_count,
-      duplicate_code_pct, tech_debt_minutes, lint_errors, gate_passed
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      duplicate_code_pct, tech_debt_minutes, lint_errors, mcp_score, gate_passed
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const result = stmt.run(
@@ -46,6 +47,7 @@ export async function saveQualityHistory(
     metrics.duplicateCodePct ?? null,
     metrics.techDebtMinutes ?? null,
     metrics.lintErrors ?? 0,
+    metrics.mcpScore ?? null,
     sqlBoolean(metrics.gatePassed) ?? 0
   );
 

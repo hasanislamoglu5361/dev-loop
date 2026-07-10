@@ -253,6 +253,8 @@ export {
   runQualityCheck,
   runQualityGate,
 } from './runtime/quality-checks.js';
+export { measureCyclomaticComplexity, measureProjectComplexity } from './runtime/complexity.js';
+export type { ComplexityMeasurement } from './runtime/complexity.js';
 export type {
   CoverageSummary,
   QualityChecker,
@@ -540,12 +542,13 @@ export type {
   SandboxWriteResult,
 } from './runtime/mcp-sandbox.js';
 
-export { runLoop, SuccessHookError } from './runtime/engine.js';
+export { findLatestResumableLoop, replayLoop, resumeLoop, runLoop, SuccessHookError } from './runtime/engine.js';
 export type {
   BuildLoopContextRequest,
   FallbackContextRequest,
   GenerateLoopTurnRequest,
   LoopGenerationResult,
+  LoopCheckpointState,
   LoopEngineDependencies,
   LoopSuccessHook,
   LoopSuccessHookContext,
@@ -554,8 +557,14 @@ export type {
   LoopTurnExecutionResult,
   RunLoopInitializationResult,
   RunLoopOptions,
+  ResumeLoopOptions,
+  ReplayLoopOptions,
+  ReplayDryRunResult,
   SelectedLoopTool,
 } from './runtime/engine.js';
+
+export { composeProductionRuntime } from './runtime/composer.js';
+export type { RuntimeComposerOptions, RuntimeComposerResult } from './runtime/composer.js';
 
 export {
   DEV_LOOP_GITIGNORE_PATTERNS,

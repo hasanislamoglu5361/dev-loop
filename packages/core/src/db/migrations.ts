@@ -14,6 +14,8 @@ export interface Migration {
 
 const migrations: readonly Migration[] = [
   { version: 1, name: '001_initial_schema', up: applyMigration1 },
+  { version: 2, name: '002_replay_provenance', up: applyMigration2 },
+  { version: 3, name: '003_quality_mcp_score', up: applyMigration3 },
 ];
 
 /** Run all pending migrations against the database */
@@ -275,4 +277,19 @@ function applyMigration1(db: Database.Database): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_flaky_tests_test_name_unique ON flaky_tests(test_name);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_golden_files_file_path_unique ON golden_files(file_path)
   `);
+}
+
+function applyMigration2(db: Database.Database): void {
+  const columns = db.prepare('PRAGMA table_info(loop_history)').all() as Array<{ name: string }>;
+  if (!columns.some(column => column.name === 'source_loop_id')) {
+    db.exec('ALTER TABLE loop_history ADD COLUMN source_loop_id INTEGER REFERENCES loop_history(id)');
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_loop_history_source_loop ON loop_history(source_loop_id)');
+}
+
+function applyMigration3(db: Database.Database): void {
+  const columns = db.prepare('PRAGMA table_info(quality_history)').all() as Array<{ name: string }>;
+  if (!columns.some(column => column.name === 'mcp_score')) {
+    db.exec('ALTER TABLE quality_history ADD COLUMN mcp_score REAL');
+  }
 }

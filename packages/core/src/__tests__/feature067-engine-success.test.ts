@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { access } from 'node:fs/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { closeDatabase } from '../db/connection.js';
 import { getLoopDetail } from '../db/queries/index.js';
@@ -118,6 +119,27 @@ describe('FEATURE067 - loop success hooks', () => {
     expect(optionalHooks.exportFineTuneDataset).not.toHaveBeenCalled();
     expect(optionalHooks.syncObsidian).not.toHaveBeenCalled();
     expect(optionalHooks.updateCalendar).not.toHaveBeenCalled();
+  });
+
+  it('blocks success hooks when the production quality gate fails', async () => {
+    const projectDir = tempProject();
+    const commit = vi.fn();
+    const notify = vi.fn();
+    const result = await runLoop('FEATURE106-quality-block', {
+      projectDir,
+      dbPath: path.join(projectDir, '.dev-loop', 'dev-loop.db'),
+      dependencies: baseDependencies({
+        qualityGate: vi.fn(async () => ({ success: false, blockCommit: true, summary: 'coverage below threshold' })),
+        successHooks: { commit },
+        notify,
+      }),
+    });
+
+    expect(result).toMatchObject({ success: false, exitReason: 'quality_gate' });
+    expect(commit).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ event: 'quality_gate_failed' }));
+    await expect(getLoopDetail(result.loopId)).resolves.toMatchObject({ success: 0, failure_reason: 'coverage below threshold' });
+    await expect(access(path.join(projectDir, '.dev-loop', 'sandbox', 'src', 'success.ts'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('Test hook failure is actionable', async () => {

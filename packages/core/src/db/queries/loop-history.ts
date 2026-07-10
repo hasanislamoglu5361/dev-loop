@@ -34,6 +34,7 @@ const LOOP_UPDATE_COLUMNS = {
   uncertainTagsResolved: 'uncertain_tags_resolved',
   userRating: 'user_rating',
   planningLoopId: 'planning_loop_id',
+  sourceLoopId: 'source_loop_id',
   completedAt: 'completed_at',
 } as const;
 
@@ -49,6 +50,7 @@ export interface CreateLoopOptions {
   fallbackUsed?: boolean;
   fallbackModel?: string;
   planningLoopId?: number;
+  sourceLoopId?: number;
 }
 
 export interface LoopUpdate {
@@ -117,8 +119,9 @@ export async function createLoop(featureId: string, options: CreateLoopOptions =
       fallback_used,
       fallback_model,
       planning_loop_id
+      , source_loop_id
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const result = stmt.run(
@@ -133,7 +136,8 @@ export async function createLoop(featureId: string, options: CreateLoopOptions =
     sqlNullable(options.verifierProvider),
     sqlBoolean(options.fallbackUsed),
     sqlNullable(options.fallbackModel),
-    options.planningLoopId ?? null
+    options.planningLoopId ?? null,
+    options.sourceLoopId ?? null
   );
   return { id: result.lastInsertRowid as number };
 }

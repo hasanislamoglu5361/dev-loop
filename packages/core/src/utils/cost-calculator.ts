@@ -51,6 +51,24 @@ export class CostTracker {
 
   constructor(private readonly options: CostTrackerOptions = {}) {}
 
+  restore(inputTokens: number, outputTokens: number, totalCostUsd: number, provider: string, modelId: string): void {
+    if ([inputTokens, outputTokens, totalCostUsd].some(value => !Number.isFinite(value) || value < 0)) {
+      throw new Error('Cost checkpoint values must be finite non-negative numbers.');
+    }
+    this.totalInputTokens = inputTokens;
+    this.totalOutputTokens = outputTokens;
+    this.totalCostUsd = totalCostUsd;
+    this.breakdowns = [{
+      inputTokens,
+      outputTokens,
+      inputCostUsd: 0,
+      outputCostUsd: totalCostUsd,
+      totalCostUsd,
+      provider,
+      model: modelId,
+    }];
+  }
+
   add(inputTokens: number, outputTokens: number, provider: string, modelId: string): CostBreakdown {
     const cost = calculateCallCost(inputTokens, outputTokens, provider, modelId);
     this.breakdowns.push(cost);

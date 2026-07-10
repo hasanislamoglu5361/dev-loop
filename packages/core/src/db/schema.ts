@@ -2,7 +2,7 @@
 // Drizzle ORM schema definition for dev-loop SQLite database.
 
 import { sql } from 'drizzle-orm';
-import { index, integer, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { index, integer, real, sqliteTable, text, uniqueIndex, type AnySQLiteColumn } from 'drizzle-orm/sqlite-core';
 
 const createdAt = () => text('created_at').notNull().default(sql`(datetime('now'))`);
 
@@ -35,6 +35,7 @@ export const loopHistory = sqliteTable('loop_history', {
   uncertainTagsResolved: integer('uncertain_tags_resolved').default(0),
   userRating: integer('user_rating'),
   planningLoopId: integer('planning_loop_id'),
+  sourceLoopId: integer('source_loop_id').references((): AnySQLiteColumn => loopHistory.id),
   createdAt: createdAt(),
   completedAt: text('completed_at'),
 }, table => {
@@ -42,6 +43,7 @@ export const loopHistory = sqliteTable('loop_history', {
     createdAtIdx: index('idx_loop_history_created').on(table.createdAt),
     primaryModelIdx: index('idx_loop_history_model').on(table.primaryModel),
     successIdx: index('idx_loop_history_success').on(table.success),
+    sourceLoopIdx: index('idx_loop_history_source_loop').on(table.sourceLoopId),
   };
 });
 
@@ -215,6 +217,7 @@ export const qualityHistory = sqliteTable('quality_history', {
   duplicateCodePct: real('duplicate_code_pct'),
   techDebtMinutes: integer('tech_debt_minutes'),
   lintErrors: integer('lint_errors').default(0),
+  mcpScore: real('mcp_score'),
   gatePassed: integer('gate_passed').default(0),
   createdAt: createdAt(),
 });

@@ -59,7 +59,7 @@ describe('FEATURE062 - loop engine initialization', () => {
       loopId: String(result.loopId),
       turn: 0,
       state: {
-        phase: 'initialized',
+        phase: 'ready_for_turn',
         featureId: 'FEATURE062',
       },
     });

@@ -77,7 +77,7 @@ export async function runTests(
   }
 
   if (request.config.type === 'docker') {
-    return dockerPlaceholderResult(request.config, changedFiles);
+    return runDockerTests(request, changedFiles);
   }
 
   const command = request.config.command;
@@ -151,27 +151,51 @@ export function parseTestProcessResult(input: TestOutputParseInput): Pick<TestRu
   };
 }
 
-function dockerPlaceholderResult(config: TestRunnerConfig, changedFiles: string[]): TestRunResult {
-  const command = dockerCommandPreview(config);
-
-  return {
-    runner: 'docker',
-    success: false,
-    status: 'skipped',
-    command,
-    args: config.args ?? [],
-    exitCode: null,
-    stdout: '',
-    stderr: '',
-    summary: 'Docker compose test runner is configured but not implemented yet.',
-    changedFiles,
-  };
+async function runDockerTests(request: TestRunRequest, changedFiles: string[]): Promise<TestRunResult> {
+  if (!request.config.service) {
+    throw new Error('Docker test runner requires a configured service.');
+  }
+  const args = dockerComposeArgs(request.config);
+  const timeoutSeconds = request.config.timeoutSeconds ?? request.config.timeout_seconds;
+  try {
+    const processResult = await runProcess('docker', args, {
+      cwd: request.projectDir,
+      env: request.env,
+      spawn: request.spawn,
+      timeoutMs: timeoutSeconds === undefined ? undefined : timeoutSeconds * 1000,
+    });
+    return {
+      runner: 'docker',
+      command: 'docker',
+      args,
+      exitCode: processResult.exitCode,
+      stdout: processResult.stdout,
+      stderr: processResult.stderr,
+      changedFiles,
+      ...parseTestProcessResult(processResult),
+    };
+  } catch (error) {
+    if (!(error instanceof ProcessError)) throw error;
+    const timedOut = timeoutSeconds !== undefined && error.exitCode === null;
+    return {
+      runner: 'docker',
+      success: false,
+      status: timedOut ? 'timed_out' : 'failed',
+      command: 'docker',
+      args,
+      exitCode: error.exitCode,
+      stdout: error.stdout,
+      stderr: error.stderr,
+      summary: timedOut ? `Docker test command timed out after ${timeoutSeconds}s.` : (firstUsefulLine(`${error.stdout}\n${error.stderr}`) ?? 'Docker tests failed.'),
+      changedFiles,
+    };
+  }
 }
 
-function dockerCommandPreview(config: TestRunnerConfig): string {
+function dockerComposeArgs(config: TestRunnerConfig): string[] {
   const composeFile = config.composeFile ?? config.compose_file;
   const command = config.command ?? '';
-  const parts = ['docker', 'compose'];
+  const parts = ['compose'];
 
   if (composeFile) {
     parts.push('-f', composeFile);
@@ -187,7 +211,8 @@ function dockerCommandPreview(config: TestRunnerConfig): string {
     parts.push(command);
   }
 
-  return parts.join(' ');
+  parts.push(...(config.args ?? []));
+  return parts;
 }
 
 function incrementalArgs(options: TestRunnerOptions, changedFiles: string[]): string[] {

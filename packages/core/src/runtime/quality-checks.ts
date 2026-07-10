@@ -4,6 +4,7 @@ import type { SpawnLike } from '../utils/process.js';
 export type QualityCheckKind =
   | 'vulnerability'
   | 'coverage'
+  | 'complexity'
   | 'lint'
   | 'typecheck'
   | 'secrets'
@@ -53,6 +54,7 @@ export interface QualityMetrics {
   lintErrors?: number;
   uncertainTags?: number;
   mcpScore?: number;
+  complexityScore?: number;
 }
 
 export interface QualityCheckResult {
@@ -84,6 +86,7 @@ export interface QualityGateThresholds {
   coverage?: number;
   typeCoverage?: number;
   mcpScore?: number;
+  complexityMax?: number;
 }
 
 export interface QualityGateFailure {
@@ -379,37 +382,52 @@ function collectQualityFailures(
   }
 
   if (
+    thresholds.complexityMax !== undefined &&
+    metrics.complexityScore !== undefined &&
+    metrics.complexityScore > thresholds.complexityMax
+  ) {
+    failures.push({
+      kind: 'complexity',
+      reason: `Complexity ${metrics.complexityScore} exceeds maximum ${thresholds.complexityMax}.`,
+      actionableError: 'Refactor the most complex function or raise the configured complexity maximum.',
+    });
+  }
+
+  if (
     thresholds.coverage !== undefined &&
-    metrics.testCoveragePct !== undefined &&
-    metrics.testCoveragePct < thresholds.coverage
+    (metrics.testCoveragePct === undefined || metrics.testCoveragePct < thresholds.coverage)
   ) {
     failures.push({
       kind: 'coverage',
-      reason: `Coverage ${metrics.testCoveragePct}% is below required ${thresholds.coverage}%.`,
+      reason: metrics.testCoveragePct === undefined
+        ? `Coverage output did not provide the required ${thresholds.coverage}% metric.`
+        : `Coverage ${metrics.testCoveragePct}% is below required ${thresholds.coverage}%.`,
       actionableError: 'Increase test coverage or lower the configured coverage threshold.',
     });
   }
 
   if (
     thresholds.typeCoverage !== undefined &&
-    metrics.typeCoveragePct !== undefined &&
-    metrics.typeCoveragePct < thresholds.typeCoverage
+    (metrics.typeCoveragePct === undefined || metrics.typeCoveragePct < thresholds.typeCoverage)
   ) {
     failures.push({
       kind: 'typecheck',
-      reason: `Type coverage ${metrics.typeCoveragePct}% is below required ${thresholds.typeCoverage}%.`,
+      reason: metrics.typeCoveragePct === undefined
+        ? `Type coverage output did not provide the required ${thresholds.typeCoverage}% metric.`
+        : `Type coverage ${metrics.typeCoveragePct}% is below required ${thresholds.typeCoverage}%.`,
       actionableError: 'Improve type coverage or lower the configured type coverage threshold.',
     });
   }
 
   if (
     thresholds.mcpScore !== undefined &&
-    metrics.mcpScore !== undefined &&
-    metrics.mcpScore < thresholds.mcpScore
+    (metrics.mcpScore === undefined || metrics.mcpScore < thresholds.mcpScore)
   ) {
     failures.push({
       kind: 'mcp',
-      reason: `MCP score ${metrics.mcpScore} is below required ${thresholds.mcpScore}.`,
+      reason: metrics.mcpScore === undefined
+        ? `MCP score is missing; required minimum is ${thresholds.mcpScore}.`
+        : `MCP score ${metrics.mcpScore} is below required ${thresholds.mcpScore}.`,
       actionableError: 'Improve MCP evidence quality before committing.',
     });
   }
@@ -443,15 +461,18 @@ interface BuildQualityResultInput {
 
 function buildQualityResult(input: BuildQualityResultInput): QualityCheckResult {
   const output = [input.stdout, input.stderr].filter(Boolean).join('\n');
-  const success = input.exitCode === 0 && !input.timedOut;
+  const parsed = parseQualityOutput(input.kind, output);
+  const malformed = input.exitCode === 0 && !input.timedOut && isMalformedSuccessfulOutput(input.kind, output, parsed);
+  const success = input.exitCode === 0 && !input.timedOut && !malformed;
   const status: QualityCheckStatus = input.timedOut
     ? 'timed_out'
     : success
       ? 'passed'
       : 'failed';
-  const parsed = parseQualityOutput(input.kind, output);
   const summary = input.timedOut
     ? `${input.kind} check timed out after ${input.timeoutSeconds}s.`
+    : malformed
+      ? `${input.kind} check returned unrecognized output.`
     : firstUsefulLine(output) ?? (success ? `${input.kind} check passed.` : `${input.kind} check failed.`);
   const actionableError = success
     ? undefined
@@ -473,16 +494,33 @@ function buildQualityResult(input: BuildQualityResultInput): QualityCheckResult 
   };
 }
 
+function isMalformedSuccessfulOutput(
+  kind: QualityCheckKind,
+  output: string,
+  parsed: Pick<QualityCheckResult, 'coverage' | 'vulnerabilities' | 'metrics'>,
+): boolean {
+  if (kind === 'coverage') return Object.keys(parsed.coverage ?? {}).length === 0;
+  if (kind === 'vulnerability') {
+    return parseJsonObject(output) === undefined && !/found\s+\d+\s+vulnerabilit(?:y|ies)/i.test(output);
+  }
+  return false;
+}
+
 function parseQualityOutput(
   kind: QualityCheckKind,
   output: string,
-): Pick<QualityCheckResult, 'coverage' | 'vulnerabilities'> {
+): Pick<QualityCheckResult, 'coverage' | 'vulnerabilities' | 'metrics'> {
   if (kind === 'vulnerability') {
     return { vulnerabilities: parseVulnerabilityOutput(output) };
   }
 
   if (kind === 'coverage') {
     return { coverage: parseCoverageOutput(output) };
+  }
+
+  if (kind === 'typecheck') {
+    const match = output.match(/(?:type\s+coverage[^\d]*)?(\d+(?:\.\d+)?)%/i);
+    return match ? { metrics: { typeCoveragePct: Number(match[1]) } } : {};
   }
 
   return {};
@@ -502,6 +540,8 @@ function actionableErrorFor(
       return 'Review dependency advisories and update, patch, or explicitly disable the vulnerability check.';
     case 'coverage':
       return 'Improve test coverage or adjust the configured coverage threshold.';
+    case 'complexity':
+      return 'Refactor complex control flow or adjust the configured complexity maximum.';
     case 'lint':
       return 'Fix lint issues or update the lint configuration.';
     case 'typecheck':

@@ -131,8 +131,8 @@ describe('FEATURE061 - test runner abstraction', () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
-  it('returns a Docker compose placeholder without running Docker', async () => {
-    const spawn = createSpawn({ stdout: 'should not run\n' });
+  it('executes Docker Compose with argv-safe config and captures the result', async () => {
+    const spawn = createSpawn({ stdout: '3 passed\n' });
 
     const result = await runTests({
       config: {
@@ -148,13 +148,13 @@ describe('FEATURE061 - test runner abstraction', () => {
 
     expect(result).toMatchObject({
       runner: 'docker',
-      success: false,
-      status: 'skipped',
-      command: 'docker compose -f compose.test.yml run --rm app pytest',
-      args: ['-q'],
+      success: true,
+      status: 'passed',
+      command: 'docker',
+      args: ['compose', '-f', 'compose.test.yml', 'run', '--rm', 'app', 'pytest', '-q'],
+      stdout: '3 passed\n',
     });
-    expect(result.summary).toContain('not implemented');
-    expect(spawn).not.toHaveBeenCalled();
+    expect(spawn).toHaveBeenCalledWith('docker', result.args, expect.objectContaining({ cwd: '/tmp/project' }));
   });
 
   it('uses the incremental test file support hook when changed files are provided', async () => {

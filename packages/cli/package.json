@@ -29,9 +29,11 @@
   "dependencies": {
     "@dev-loop/core": "0.1.0",
     "@dev-loop/ui": "0.1.0",
-    "commander": "^12.1.0"
+    "commander": "^12.1.0",
+    "inquirer": "^9.3.8"
   },
   "devDependencies": {
+    "@types/inquirer": "^9.0.9",
     "@types/node": "^26.1.1",
     "typescript": "^5.4.0"
   }

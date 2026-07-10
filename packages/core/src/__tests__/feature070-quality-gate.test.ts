@@ -164,4 +164,20 @@ describe('FEATURE070 - Quality Gate Orchestrator', () => {
       }),
     ]);
   });
+
+  it('blocks complexity strictly above the configured maximum', async () => {
+    const atBoundary = await runQualityGate({
+      projectDir: '/tmp/project', checks: [{ kind: 'complexity' }],
+      checkers: { complexity: vi.fn(async () => passed('complexity', { metrics: { complexityScore: 10 } })) },
+      thresholds: { complexityMax: 10 },
+    });
+    expect(atBoundary.success).toBe(true);
+
+    const above = await runQualityGate({
+      projectDir: '/tmp/project', checks: [{ kind: 'complexity' }],
+      checkers: { complexity: vi.fn(async () => passed('complexity', { metrics: { complexityScore: 11 } })) },
+      thresholds: { complexityMax: 10 },
+    });
+    expect(above.failures).toEqual([expect.objectContaining({ kind: 'complexity', reason: 'Complexity 11 exceeds maximum 10.' })]);
+  });
 });

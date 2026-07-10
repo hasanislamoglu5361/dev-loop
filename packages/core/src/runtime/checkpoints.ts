@@ -8,6 +8,7 @@ export interface CheckpointManagerOptions {
 }
 
 export interface CheckpointRecord<TState = unknown> {
+  version: 1;
   loopId: string;
   turn: number;
   state: TState;
@@ -36,7 +37,7 @@ export class CheckpointManager {
     const filePath = this.filePath(loopId, turn);
     try {
       const content = await fs.readFile(filePath, 'utf8');
-      return JSON.parse(content) as CheckpointRecord<TState>;
+      return validateCheckpoint<TState>(JSON.parse(content), { loopId, turn, filePath });
     } catch (error) {
       if (isNotFound(error)) return null;
       if (error instanceof SyntaxError) {
@@ -84,6 +85,28 @@ export class CheckpointManager {
   private filePath(loopId: string, turn: number): string {
     return path.join(this.checkpointDir, `${safeLoopId(loopId)}-turn-${turn}.json`);
   }
+}
+
+function validateCheckpoint<TState>(value: unknown, expected: { loopId: string; turn: number; filePath: string }): CheckpointRecord<TState> {
+  if (!value || typeof value !== 'object') {
+    throw incompatibleCheckpoint(expected, 'checkpoint is not an object');
+  }
+  const record = value as Partial<CheckpointRecord<TState>>;
+  if (record.version !== 1) {
+    throw incompatibleCheckpoint(expected, record.version === undefined ? 'legacy checkpoint has no version' : `unsupported version ${String(record.version)}`);
+  }
+  if (record.loopId !== expected.loopId || record.turn !== expected.turn || !('state' in record)) {
+    throw incompatibleCheckpoint(expected, 'checkpoint identity or state is invalid');
+  }
+  return record as CheckpointRecord<TState>;
+}
+
+function incompatibleCheckpoint(expected: { loopId: string; turn: number; filePath: string }, reason: string): CheckpointError {
+  return new CheckpointError(
+    `Checkpoint for ${expected.loopId} turn ${expected.turn} is incompatible: ${reason}.`,
+    'Migrate the checkpoint to version 1 or resume from a compatible checkpoint.',
+    { ...expected, reason },
+  );
 }
 
 function safeLoopId(loopId: string): string {

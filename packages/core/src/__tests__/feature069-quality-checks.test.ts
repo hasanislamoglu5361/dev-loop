@@ -150,7 +150,7 @@ describe('FEATURE069 - vulnerability, lint, coverage, type coverage checks', () 
       { kind: 'lint', enabled: true, command: 'npm', args: ['run', 'lint'] },
       { kind: 'typecheck', enabled: true, command: 'npm', args: ['run', 'typecheck'] },
     ];
-    const spawn = createSpawn({ stdout: 'ok\n' });
+    const spawn = createSpawn({ stdout: 'found 0 vulnerabilities\nLines: 100%\n' });
 
     const gate = await runQualityGate({
       checks: configs,
@@ -187,5 +187,22 @@ describe('FEATURE069 - vulnerability, lint, coverage, type coverage checks', () 
       exitCode: null,
       actionableError: 'coverage check timed out after 0.01s. Increase timeoutSeconds or optimize the command.',
     });
+  });
+
+  it('parses type-coverage output without losing an exact zero', async () => {
+    const result = await runQualityCheck({
+      check: { kind: 'typecheck', command: 'type-coverage', args: [] },
+      projectDir: '/tmp/project',
+      spawn: createSpawn({ stdout: 'type coverage: 0.00%\n' }),
+    });
+    expect(result.metrics).toEqual({ typeCoveragePct: 0 });
+  });
+
+  it('fails closed on malformed successful coverage and vulnerability output', async () => {
+    for (const kind of ['coverage', 'vulnerability'] as const) {
+      await expect(runQualityCheck({
+        check: { kind, command: 'tool', args: [] }, projectDir: '/tmp/project', spawn: createSpawn({ stdout: 'not a metric\n' }),
+      })).resolves.toMatchObject({ success: false, status: 'failed', summary: `${kind} check returned unrecognized output.` });
+    }
   });
 });

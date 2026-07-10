@@ -1,9 +1,10 @@
 import path from 'node:path';
+import { readFile, rm } from 'node:fs/promises';
 import { loadConfig } from '../config/loader.js';
 import type { DevLoopConfig } from '../config/schema.js';
 import { initProjectRuntime } from '../context/init-runtime.js';
 import { initDatabase } from '../db/connection.js';
-import { completeLoop, createLoop, createLoopTurn, failLoop, saveMcpScore, updateLoop } from '../db/queries/index.js';
+import { completeLoop, createLoop, createLoopTurn, failLoop, getLoopDetail, getRecentLoops, saveMcpScore, updateLoop } from '../db/queries/index.js';
 import { CostTracker } from '../utils/cost-calculator.js';
 import { readFileSafe, writeFileAtomic } from '../utils/file-system.js';
 import { parseGeneratedFiles } from '../utils/generated-files.js';
@@ -33,6 +34,7 @@ export interface LoopEngineDependencies {
   collectSource?: (request: FallbackContextRequest) => string | Promise<string>;
   collectPatterns?: (request: FallbackContextRequest) => string[] | Promise<string[]>;
   successHooks?: LoopSuccessHooks;
+  qualityGate?: (request: LoopReviewContextRequest) => Promise<{ success: boolean; blockCommit: boolean; summary?: string }>;
   notify?: (event: LoopNotificationEvent) => void | Promise<void>;
   now?: () => number;
 }
@@ -45,7 +47,44 @@ export interface RunLoopOptions {
   featureKeywords?: string;
   featureType?: string;
   language?: string;
+  sourceLoopId?: number;
   dependencies?: LoopEngineDependencies;
+}
+
+export interface ResumeLoopOptions extends RunLoopOptions {
+  loopId: number;
+  turn?: number;
+}
+
+export interface ReplayLoopOptions extends RunLoopOptions {
+  sourceLoopId: number;
+  dryRun?: boolean;
+  modelOverride?: SelectedLoopTool;
+  verifierOverride?: SelectedLoopTool;
+}
+
+export interface ReplayDryRunResult {
+  dryRun: true;
+  sourceLoopId: number;
+  featureId: string;
+  selectedModel: SelectedLoopTool;
+  selectedVerifier: SelectedLoopTool;
+}
+
+export interface LoopCheckpointState {
+  phase: 'ready_for_turn' | 'completed';
+  featureId: string;
+  dbPath: string;
+  selectedModel: SelectedLoopTool;
+  selectedVerifier: SelectedLoopTool;
+  nextTurn: number;
+  turns: LoopTurnExecutionResult[];
+  bugs: ReviewFinding[];
+  focusFiles: string[];
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCostUsd: number;
+  startedAt: number;
 }
 
 export interface LoopTimeTracker {
@@ -110,13 +149,14 @@ export type LoopExitReason =
   | 'cost_budget'
   | 'time_budget'
   | 'fallback_verified'
-  | 'fallback_failed';
+  | 'fallback_failed'
+  | 'quality_gate';
 
 export interface LoopNotificationEvent {
-  event: 'budget_exceeded' | 'fallback_failed' | 'success';
+  event: 'budget_exceeded' | 'fallback_failed' | 'quality_gate_failed' | 'success';
   featureId: string;
   loopId: number;
-  reason: Extract<LoopExitReason, 'cost_budget' | 'time_budget' | 'fallback_failed' | 'verified' | 'fallback_verified'>;
+  reason: Extract<LoopExitReason, 'cost_budget' | 'time_budget' | 'fallback_failed' | 'quality_gate' | 'verified' | 'fallback_verified'>;
   message: string;
 }
 
@@ -206,18 +246,28 @@ export async function runLoop(
     primaryProvider: selectedModel.provider,
     verifierModel: selectedVerifier.model,
     verifierProvider: selectedVerifier.provider,
+    sourceLoopId: options.sourceLoopId,
   });
   const checkpointManager = new CheckpointManager({ checkpointDir: runtime.dirs.checkpoints });
 
   await checkpointManager.save({
+    version: 1,
     loopId: String(loop.id),
     turn: 0,
     state: {
-      phase: 'initialized',
+      phase: 'ready_for_turn',
       featureId,
       dbPath,
       selectedModel,
       selectedVerifier,
+      nextTurn: 1,
+      turns: [],
+      bugs: [],
+      focusFiles: [],
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCostUsd: 0,
+      startedAt: started,
     },
   });
 
@@ -255,6 +305,7 @@ export async function runLoop(
       started,
       notificationErrors: result.notificationErrors,
       dependencies: options.dependencies,
+      checkpointManager,
     });
     result.turns = retryResult.turns;
     result.turn = retryResult.turns[retryResult.turns.length - 1];
@@ -269,6 +320,137 @@ export async function runLoop(
   }
 
   return result;
+}
+
+export async function resumeLoop(options: ResumeLoopOptions): Promise<RunLoopInitializationResult> {
+  const runtime = initProjectRuntime(options.projectDir);
+  const manager = new CheckpointManager({ checkpointDir: runtime.dirs.checkpoints });
+  const checkpoint = options.turn === undefined
+    ? await manager.restoreLatest<LoopCheckpointState>(String(options.loopId))
+    : await manager.restore<LoopCheckpointState>(String(options.loopId), options.turn);
+  if (!checkpoint) throw new Error(`No checkpoint found for loop ${options.loopId}.`);
+  assertLoopCheckpointState(checkpoint.state, options.loopId, checkpoint.turn);
+  if (checkpoint.state.phase === 'completed') throw new Error(`Loop ${options.loopId} is already completed and cannot be resumed.`);
+
+  initDatabase(checkpoint.state.dbPath);
+  const loop = await getLoopDetail(options.loopId);
+  if (!loop) throw new Error(`Loop ${options.loopId} does not exist in its checkpoint database.`);
+  if (loop.completed_at !== null && loop.completed_at !== undefined) {
+    throw new Error(`Loop ${options.loopId} is already terminal and cannot be resumed.`);
+  }
+  if (!shouldRunOneTurn(options.dependencies)) {
+    throw new Error('Resume requires production loop dependencies.');
+  }
+
+  const config = await loadConfig({ projectDir: options.projectDir, configPath: options.configPath });
+  const cost = new CostTracker();
+  cost.restore(
+    checkpoint.state.totalInputTokens,
+    checkpoint.state.totalOutputTokens,
+    checkpoint.state.totalCostUsd,
+    checkpoint.state.selectedModel.provider,
+    checkpoint.state.selectedModel.model,
+  );
+  const notificationErrors: string[] = [];
+  const resumed = await runTurnLoop({
+    featureId: checkpoint.state.featureId,
+    loopId: options.loopId,
+    projectDir: options.projectDir,
+    sandboxDir: runtime.dirs.sandbox,
+    bugsPath: runtime.files.BUGS,
+    config,
+    selectedModel: checkpoint.state.selectedModel,
+    selectedVerifier: checkpoint.state.selectedVerifier,
+    cost,
+    started: checkpoint.state.startedAt,
+    notificationErrors,
+    dependencies: options.dependencies,
+    checkpointManager: manager,
+    resumeState: checkpoint.state,
+  });
+  return {
+    featureId: checkpoint.state.featureId,
+    loopId: options.loopId,
+    initialized: true,
+    config,
+    dbPath: checkpoint.state.dbPath,
+    checkpointPath: path.join(runtime.dirs.checkpoints, `${options.loopId}-turn-${checkpoint.turn}.json`),
+    selectedModel: checkpoint.state.selectedModel,
+    selectedVerifier: checkpoint.state.selectedVerifier,
+    cost,
+    time: { startedAt: new Date(checkpoint.state.startedAt).toISOString(), elapsedMs: (options.dependencies?.now ?? Date.now)() - checkpoint.state.startedAt },
+    turns: resumed.turns,
+    turn: resumed.turns[resumed.turns.length - 1],
+    success: resumed.success,
+    exitReason: resumed.exitReason,
+    fallbackUsed: resumed.fallbackUsed,
+    successHooks: resumed.successHooks,
+    notificationErrors,
+  };
+}
+
+function assertLoopCheckpointState(state: LoopCheckpointState, loopId: number, turn: number): void {
+  const valid = state && typeof state === 'object'
+    && state.phase === 'ready_for_turn'
+    && typeof state.featureId === 'string'
+    && typeof state.dbPath === 'string'
+    && Number.isSafeInteger(state.nextTurn) && state.nextTurn >= 1
+    && Array.isArray(state.turns) && Array.isArray(state.bugs) && Array.isArray(state.focusFiles)
+    && Number.isFinite(state.totalInputTokens) && Number.isFinite(state.totalOutputTokens)
+    && Number.isFinite(state.totalCostUsd) && Number.isFinite(state.startedAt)
+    && typeof state.selectedModel?.provider === 'string' && typeof state.selectedModel?.model === 'string'
+    && typeof state.selectedVerifier?.provider === 'string' && typeof state.selectedVerifier?.model === 'string';
+  if (!valid) {
+    throw new Error(`Checkpoint for loop ${loopId} turn ${turn} has unsafe or incomplete engine state. Restore a valid checkpoint.`);
+  }
+}
+
+export async function findLatestResumableLoop(projectDir: string): Promise<number | null> {
+  const runtime = initProjectRuntime(projectDir);
+  initDatabase(path.join(runtime.runtimeRoot, 'dev-loop.db'));
+  const manager = new CheckpointManager({ checkpointDir: runtime.dirs.checkpoints });
+  const loops = await getRecentLoops(10_000);
+  for (const loop of loops) {
+    if (loop.completed_at !== null && loop.completed_at !== undefined) continue;
+    const id = Number(loop.id);
+    if (!Number.isSafeInteger(id) || id < 1) continue;
+    if (await manager.restoreLatest(String(id))) return id;
+  }
+  return null;
+}
+
+export async function replayLoop(options: ReplayLoopOptions): Promise<RunLoopInitializationResult | ReplayDryRunResult> {
+  const runtime = initProjectRuntime(options.projectDir);
+  const dbPath = options.dbPath ?? path.join(runtime.runtimeRoot, 'dev-loop.db');
+  initDatabase(dbPath);
+  const source = await getLoopDetail(options.sourceLoopId);
+  if (!source) throw new Error(`Replay source loop ${options.sourceLoopId} does not exist.`);
+  const featureId = String(source.feature_id ?? 'FEATURES');
+  const selectedModel = options.modelOverride ?? {
+    provider: String(source.primary_provider ?? ''),
+    model: String(source.primary_model ?? ''),
+  };
+  const selectedVerifier = options.verifierOverride ?? {
+    provider: String(source.verifier_provider ?? ''),
+    model: String(source.verifier_model ?? ''),
+  };
+  if (!selectedModel.provider || !selectedModel.model || !selectedVerifier.provider || !selectedVerifier.model) {
+    throw new Error(`Replay source loop ${options.sourceLoopId} is missing its recorded model selection.`);
+  }
+  if (options.dryRun) {
+    return { dryRun: true, sourceLoopId: options.sourceLoopId, featureId, selectedModel, selectedVerifier };
+  }
+  const dependencies: LoopEngineDependencies = {
+    ...options.dependencies,
+    selectModel: () => selectedModel,
+    selectVerifier: () => selectedVerifier,
+  };
+  return runLoop(featureId, {
+    ...options,
+    dbPath,
+    sourceLoopId: options.sourceLoopId,
+    dependencies,
+  });
 }
 
 async function selectModel(
@@ -321,6 +503,8 @@ interface RunTurnLoopOptions {
   started: number;
   notificationErrors: string[];
   dependencies?: LoopEngineDependencies;
+  checkpointManager: CheckpointManager;
+  resumeState?: LoopCheckpointState;
 }
 
 interface RunTurnLoopResult {
@@ -333,7 +517,10 @@ interface RunTurnLoopResult {
 
 interface InternalTurnResult extends LoopTurnExecutionResult {
   testResult: TestRunResult;
+  backups: AppliedFileBackup[];
 }
+
+interface AppliedFileBackup { absolutePath: string; content?: string }
 
 function shouldRunOneTurn(dependencies?: LoopEngineDependencies): boolean {
   const provided = [
@@ -396,12 +583,13 @@ async function runTurnLoop(options: RunTurnLoopOptions): Promise<RunTurnLoopResu
   const dependencies = options.dependencies as Required<
     Pick<LoopEngineDependencies, 'buildContext' | 'generate' | 'testRunner'>
   > & LoopEngineDependencies;
-  const turns: LoopTurnExecutionResult[] = [];
-  let bugs: ReviewFinding[] = [];
-  let focusFiles: string[] = [];
+  const turns: LoopTurnExecutionResult[] = [...(options.resumeState?.turns ?? [])];
+  let bugs: ReviewFinding[] = [...(options.resumeState?.bugs ?? [])];
+  let focusFiles: string[] = [...(options.resumeState?.focusFiles ?? [])];
+  const backups = new Map<string, AppliedFileBackup>();
   const maxRetry = options.config.loop.max_retry;
 
-  for (let turnNumber = 1; turnNumber <= maxRetry; turnNumber += 1) {
+  for (let turnNumber = options.resumeState?.nextTurn ?? 1; turnNumber <= maxRetry; turnNumber += 1) {
     const budgetStop = budgetStopReason(options);
     if (budgetStop) {
       await failLoopForBudget(options, budgetStop);
@@ -429,9 +617,11 @@ async function runTurnLoop(options: RunTurnLoopOptions): Promise<RunTurnLoopResu
       focusFiles,
     });
     turns.push(stripInternalTurn(turn));
+    for (const backup of turn.backups) if (!backups.has(backup.absolutePath)) backups.set(backup.absolutePath, backup);
 
     const verifier = dependencies.verifier;
     if (!verifier) {
+      await saveReadyCheckpoint(options, turnNumber + 1, turns, bugs, focusFiles);
       return {
         turns,
         success: turn.success,
@@ -455,6 +645,11 @@ async function runTurnLoop(options: RunTurnLoopOptions): Promise<RunTurnLoopResu
 
     bugs = review.findings;
     if (bugs.length === 0 && turn.success) {
+      const gate = await runLoopQualityGate(options, stripInternalTurn(turn));
+      if (gate?.blockCommit) {
+        if (options.config.loop.auto_rollback) await rollbackAppliedFiles([...backups.values()]);
+        return { turns, success: false, exitReason: 'quality_gate' };
+      }
       const successHooks = await runSuccessHooks(options, {
         turns,
         exitReason: 'verified',
@@ -483,6 +678,7 @@ async function runTurnLoop(options: RunTurnLoopOptions): Promise<RunTurnLoopResu
       });
       focusFiles = options.config.loop.smart_retry ? focusFilesFromFindings(bugs) : [];
     }
+    await saveReadyCheckpoint(options, turnNumber + 1, turns, bugs, focusFiles);
   }
 
   const buildFallbackContext = dependencies.buildFallbackContext;
@@ -507,6 +703,55 @@ async function runTurnLoop(options: RunTurnLoopOptions): Promise<RunTurnLoopResu
     success: false,
     exitReason: 'max_retry',
   };
+}
+
+async function runLoopQualityGate(options: RunTurnLoopOptions, turn: LoopTurnExecutionResult) {
+  if (!options.config.quality_gate.enabled || !options.dependencies?.qualityGate) return undefined;
+  const gate = await options.dependencies.qualityGate({
+    featureId: options.featureId,
+    loopId: options.loopId,
+    turn,
+    config: options.config,
+  });
+  if (!gate.success && gate.blockCommit) {
+    const message = gate.summary ?? 'Quality gate blocked the loop.';
+    await failLoop(options.loopId, { reason: message });
+    try {
+      await options.dependencies.notify?.({ event: 'quality_gate_failed', featureId: options.featureId, loopId: options.loopId, reason: 'quality_gate', message });
+    } catch (error) {
+      options.notificationErrors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  return gate;
+}
+
+async function saveReadyCheckpoint(
+  options: RunTurnLoopOptions,
+  nextTurn: number,
+  turns: LoopTurnExecutionResult[],
+  bugs: ReviewFinding[],
+  focusFiles: string[],
+): Promise<void> {
+  await options.checkpointManager.save({
+    version: 1,
+    loopId: String(options.loopId),
+    turn: nextTurn - 1,
+    state: {
+      phase: 'ready_for_turn',
+      featureId: options.featureId,
+      dbPath: path.join(initProjectRuntime(options.projectDir).runtimeRoot, 'dev-loop.db'),
+      selectedModel: options.selectedModel,
+      selectedVerifier: options.selectedVerifier,
+      nextTurn,
+      turns,
+      bugs,
+      focusFiles,
+      totalInputTokens: totalNumber(turns, 'inputTokens'),
+      totalOutputTokens: totalNumber(turns, 'outputTokens'),
+      totalCostUsd: options.cost.total,
+      startedAt: options.started,
+    } satisfies LoopCheckpointState,
+  });
 }
 
 async function runSuccessHooks(
@@ -632,7 +877,7 @@ async function runPrimaryTurn(options: RunPrimaryTurnOptions): Promise<InternalT
   const parsed = parseGeneratedFiles(generation.text);
   const generatedFiles = parsed.files.map(file => file.path);
 
-  await writeGeneratedFiles({
+  const backups = await writeGeneratedFiles({
     projectDir: options.projectDir,
     sandboxDir: options.sandboxDir,
     sandboxMode: options.config.loop.sandbox_mode,
@@ -686,6 +931,7 @@ async function runPrimaryTurn(options: RunPrimaryTurnOptions): Promise<InternalT
     outputTokens,
     costUsd: generation.costUsd ?? cost.totalCostUsd,
     testResult,
+    backups,
   };
 }
 
@@ -793,6 +1039,10 @@ async function runFallbackPath(options: RunTurnLoopOptions & {
     });
 
     if (fallbackTestResult.success && lastReview.findings.length === 0) {
+      const gate = await runLoopQualityGate(options, publicTurn);
+      if (gate?.blockCommit) {
+        return { turns: options.turns, success: false, exitReason: 'quality_gate', fallbackUsed: true };
+      }
       const successHooks = await runSuccessHooks(options, {
         turns: options.turns,
         exitReason: 'fallback_verified',
@@ -895,7 +1145,7 @@ async function reviewTurn(params: {
 }
 
 function stripInternalTurn(turn: InternalTurnResult): LoopTurnExecutionResult {
-  const { testResult: _testResult, ...publicTurn } = turn;
+  const { testResult: _testResult, backups: _backups, ...publicTurn } = turn;
   return publicTurn;
 }
 
@@ -918,12 +1168,27 @@ async function writeGeneratedFiles(params: {
   sandboxDir: string;
   sandboxMode: boolean;
   files: Array<{ path: string; content: string }>;
-}): Promise<void> {
+}): Promise<AppliedFileBackup[]> {
   const baseDir = params.sandboxMode ? params.sandboxDir : params.projectDir;
+  const backups: AppliedFileBackup[] = [];
 
   for (const file of params.files) {
     const resolved = resolveProjectPath(baseDir, file.path);
+    try {
+      backups.push({ absolutePath: resolved.absolutePath, content: await readFile(resolved.absolutePath, 'utf8') });
+    } catch (error) {
+      if (!error || typeof error !== 'object' || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      backups.push({ absolutePath: resolved.absolutePath });
+    }
     await writeFileAtomic(resolved.absolutePath, file.content);
+  }
+  return backups;
+}
+
+async function rollbackAppliedFiles(backups: AppliedFileBackup[]): Promise<void> {
+  for (const backup of [...backups].reverse()) {
+    if (backup.content === undefined) await rm(backup.absolutePath, { force: true });
+    else await writeFileAtomic(backup.absolutePath, backup.content);
   }
 }
 

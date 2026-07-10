@@ -61,4 +61,22 @@ describe('FEATURE093 - CLI Run, Watch, Verify, Test Commands', () => {
       verifierOnly: true,
     }));
   });
+
+  it('passes resume loop and turn selectors to the workflow', async () => {
+    const resume = vi.fn(async () => ({ resumed: true }));
+    const cli = createCli({ workflows: { resume } });
+
+    await cli.parseAsync(['node', 'dev-loop', 'resume', '--loop-id', '42', '--turn', '3', '--project-dir', '/tmp/project'], { from: 'node' });
+
+    expect(resume).toHaveBeenCalledWith(expect.objectContaining({ loopId: 42, turn: 3, projectDir: '/tmp/project' }));
+  });
+
+  it('passes replay provenance and dry-run to the workflow', async () => {
+    const replay = vi.fn(async () => ({ dryRun: true }));
+    const cli = createCli({ workflows: { replay } });
+
+    await cli.parseAsync(['node', 'dev-loop', 'replay', '42', '--dry-run', '--project-dir', '/tmp/project'], { from: 'node' });
+
+    expect(replay).toHaveBeenCalledWith(expect.objectContaining({ loopId: 42, dryRun: true, projectDir: '/tmp/project' }));
+  });
 });
