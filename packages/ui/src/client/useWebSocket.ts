@@ -34,6 +34,7 @@ export function useWebSocket<T = unknown>(options?: UseWebSocketOptions): UseWeb
   const reconnectAttemptsRef = useRef(0);
   const wsRef = useRef<WebSocket | null>(null);
   const eventHandlersRef = useRef<Map<string, Set<EventHandler>>>(new Map());
+  const lastSequenceRef = useRef(0);
 
   useEffect(() => {
     if (!enabled) return;
@@ -52,11 +53,16 @@ export function useWebSocket<T = unknown>(options?: UseWebSocketOptions): UseWeb
           setLastMessage(event);
           try {
             const parsed = JSON.parse(event.data);
+            if (typeof parsed?.sequence === 'number') {
+              if (parsed.sequence <= lastSequenceRef.current) return;
+              lastSequenceRef.current = parsed.sequence;
+            }
             setData(parsed as T);
 
             // Dispatch to registered event handlers
-            if (parsed?.type && eventHandlersRef.current.has(parsed.type)) {
-              eventHandlersRef.current.get(parsed.type)!.forEach(handler => handler(parsed));
+            const eventType = parsed?.event?.type ?? parsed?.type;
+            if (eventType && eventHandlersRef.current.has(eventType)) {
+              eventHandlersRef.current.get(eventType)!.forEach(handler => handler(parsed.event ?? parsed));
             }
           } catch {
             // Non-JSON message, pass raw data

@@ -10,6 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { z } from 'zod';
+import { ProjectLoopController } from './loop-controller.js';
 import {
   buildProjectRuntimePaths,
   createTestRunner,
@@ -29,6 +30,7 @@ import {
   getRecentAnalytics,
   getRecentLoops,
   getUncertainTags,
+  appendAuditEvent,
   initDatabase,
   resolveUncertainTag,
   saveUserRating,
@@ -73,6 +75,15 @@ export interface UiServerController {
 export function createUiServer(_options: UiServerOptions = {}): FastifyInstance {
   const app = Fastify({ logger: false });
   const api = createUiApi(_options.api ?? (_options.projectDir ? createProjectUiApi(_options.projectDir) : {}));
+  const controller = new ProjectLoopController({
+    projectId: path.resolve(_options.projectDir ?? process.cwd()),
+    realtime: _options.realtime,
+    persist: _options.projectDir ? event => {
+      const runtime = buildProjectRuntimePaths(_options.projectDir!);
+      initDatabase(path.join(runtime.runtimeRoot, 'dev-loop.db'));
+      appendAuditEvent({ eventType: event.type, payload: { ...event } });
+    } : undefined,
+  });
 
   const health = async () => ({
     status: 'ok',
@@ -108,7 +119,7 @@ export function createUiServer(_options: UiServerOptions = {}): FastifyInstance 
     const params = z.object({ action: z.enum(['run', 'verify', 'build', 'pause', 'resume', 'cancel']) }).parse(request.params);
     const body = z.record(z.unknown()).default({}).parse(request.body ?? {});
     const operationId = `op-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
-    const result = await api.loopControl(params.action, body);
+    const result = await controller.execute(params.action, operationId, async signal => api.loopControl(params.action, { ...body, signal }));
     return { operationId, action: params.action, status: 'completed', result };
   });
   app.post('/api/voice', async request => {
@@ -333,6 +344,9 @@ function bindWsConnection(ws: WsConnection, realtime?: EventEmitter): void {
   });
   sendEvent({ type: 'connected', state: 'ready' });
 }
+
+export { ProjectLoopController } from './loop-controller.js';
+export type { LoopControllerOptions, LoopControlState, LoopStateEvent } from './loop-controller.js';
 
 function installWebSocketServer(app: FastifyInstance, realtime?: EventEmitter): void {
   const wss = new WebSocketServer({ noServer: true });

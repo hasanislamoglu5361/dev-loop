@@ -14,9 +14,9 @@ describe('FEATURE116 UI backend contract', () => {
   it('returns operation identity and status for allowed mutations', async () => {
     const loopControl = vi.fn(async () => ({ accepted: true }));
     const app = createUiServer({ api: { loopControl } });
-    const response = await app.inject({ method: 'POST', url: '/api/loop-control/pause', payload: { loopId: 3 } });
+    const response = await app.inject({ method: 'POST', url: '/api/loop-control/build', payload: { loopId: 3 } });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ operationId: expect.stringMatching(/^op-/), action: 'pause', status: 'completed', result: { accepted: true } });
+    expect(response.json()).toMatchObject({ operationId: expect.stringMatching(/^op-/), action: 'build', status: 'completed', result: { accepted: true } });
     const rejected = await app.inject({ method: 'POST', url: '/api/loop-control/delete-everything', payload: {} });
     expect(rejected.statusCode).toBe(400);
     await app.close();
