@@ -68,3 +68,39 @@ export async function getFlakyTests(): Promise<Record<string, unknown>[]> {
   const db = getDb();
   return db.prepare('SELECT * FROM flaky_tests ORDER BY last_seen DESC').all() as Record<string, unknown>[];
 }
+
+/** Save or update a golden file checksum */
+export async function saveGoldenFile(params: { filePath: string; contentHash: string; lastVerified?: string }): Promise<{ id: number }> {
+  const db = getDb();
+  const existing = db.prepare('SELECT id FROM golden_files WHERE file_path = ?').get(
+    params.filePath
+  ) as { id: number } | undefined;
+
+  if (existing) {
+    db.prepare(`
+      UPDATE golden_files
+      SET content_hash = ?, last_verified = ?
+      WHERE id = ?
+    `).run(params.contentHash, params.lastVerified ?? new Date().toISOString(), existing.id);
+    return { id: existing.id };
+  }
+
+  const result = db.prepare(`
+    INSERT INTO golden_files (file_path, content_hash, last_verified)
+    VALUES (?, ?, ?)
+  `).run(params.filePath, params.contentHash, params.lastVerified ?? new Date().toISOString());
+
+  return { id: result.lastInsertRowid as number };
+}
+
+/** Get a golden file by path */
+export async function getGoldenFile(filePath: string): Promise<Record<string, unknown> | null> {
+  const db = getDb();
+  return db.prepare('SELECT * FROM golden_files WHERE file_path = ?').get(filePath) as Record<string, unknown> | null;
+}
+
+/** Get all golden files */
+export async function getGoldenFiles(): Promise<Record<string, unknown>[]> {
+  const db = getDb();
+  return db.prepare('SELECT * FROM golden_files ORDER BY file_path ASC').all() as Record<string, unknown>[];
+}

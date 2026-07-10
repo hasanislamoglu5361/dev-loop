@@ -13,6 +13,10 @@ export interface CostBreakdown {
   model: string;
 }
 
+export interface CostTrackerOptions {
+  onCost?: (breakdown: CostBreakdown) => void;
+}
+
 /** Calculate cost for a single API call based on token counts and pricing */
 export function calculateCallCost(
   inputTokens: number,
@@ -45,12 +49,15 @@ export class CostTracker {
   private totalCostUsd = 0;
   private breakdowns: CostBreakdown[] = [];
 
+  constructor(private readonly options: CostTrackerOptions = {}) {}
+
   add(inputTokens: number, outputTokens: number, provider: string, modelId: string): CostBreakdown {
     const cost = calculateCallCost(inputTokens, outputTokens, provider, modelId);
     this.breakdowns.push(cost);
     this.totalInputTokens += inputTokens;
     this.totalOutputTokens += outputTokens;
     this.totalCostUsd += cost.totalCostUsd;
+    this.options.onCost?.(cost);
     return cost;
   }
 

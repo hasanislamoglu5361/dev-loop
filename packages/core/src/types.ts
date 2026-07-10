@@ -28,10 +28,11 @@ export interface LoopDef {
 /**
  * Model reference and configuration types
  */
-export type ModelProvider = 'openai' | 'anthropic' | 'local' | 'custom';
+export type ModelProviderName = 'openai' | 'anthropic' | 'local' | 'custom';
+export type ModelProvider = ModelProviderName;
 
 export interface ModelRef {
-  provider: ModelProvider;
+  provider: ModelProviderName;
   model: string;
   temperature?: number;
   maxTokens?: number;

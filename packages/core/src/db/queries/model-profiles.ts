@@ -94,7 +94,11 @@ export async function updateModelProfile(params: {
 /** Get model profiles for a provider */
 export async function getModelProfilesByProvider(provider: string): Promise<Record<string, unknown>[]> {
   const db = getDb();
-  return db.prepare(`SELECT * FROM model_profiles WHERE provider = ? ORDER BY reliability_score DESC`).all(provider) as Record<string, unknown>[];
+  return db.prepare(`
+    SELECT * FROM model_profiles
+    WHERE provider = ?
+    ORDER BY success_rate DESC, total_loops DESC
+  `).all(provider) as Record<string, unknown>[];
 }
 
 /** Get best model for feature type */
@@ -143,7 +147,7 @@ export async function getBestModelForFeatureType(options: {
     if (estimatedCost > options.maxCostPer1kTokens) return null;
   }
 
-  return result;
+  return { model: result.model, provider: result.provider };
 }
 
 /** Retire a model profile */

@@ -1,18 +1,43 @@
 // packages/core/src/utils/file-system.ts
 // Cross-platform file system utilities — atomic writes, globbing, safe operations
 
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import fg from 'fast-glob';
 
 export interface GlobOptions {
   cwd?: string;
   ignore?: string[];
   dot?: boolean;
+  excludeGenerated?: boolean;
 }
 
+export interface AtomicFileSystemOps {
+  renameSync: typeof fs.renameSync;
+  writeFileSync: typeof fs.writeFileSync;
+  unlinkSync: typeof fs.unlinkSync;
+}
+
+const defaultAtomicOps: AtomicFileSystemOps = {
+  renameSync: fs.renameSync,
+  writeFileSync: fs.writeFileSync,
+  unlinkSync: fs.unlinkSync,
+};
+
+const GENERATED_FOLDER_IGNORES = [
+  '**/node_modules/**',
+  '**/dist/**',
+  '**/coverage/**',
+  '**/.turbo/**',
+  '**/.git/**',
+];
+
 /** Write content to a file atomically (write to temp then rename) */
-export async function writeFileAtomic(filePath: string, content: string | Buffer): Promise<void> {
+export async function writeFileAtomic(
+  filePath: string,
+  content: string | Buffer,
+  ops: AtomicFileSystemOps = defaultAtomicOps,
+): Promise<void> {
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });
 
@@ -22,11 +47,11 @@ export async function writeFileAtomic(filePath: string, content: string | Buffer
     if (typeof content === 'string') {
       content = Buffer.from(content, 'utf-8');
     }
-    fs.writeFileSync(tmpPath, content);
-    fs.renameSync(tmpPath, filePath);
+    ops.writeFileSync(tmpPath, content);
+    ops.renameSync(tmpPath, filePath);
   } catch (err) {
     // Clean up temp file on error
-    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    try { ops.unlinkSync(tmpPath); } catch { /* ignore */ }
     throw err;
   }
 }
@@ -56,15 +81,20 @@ export async function pathExists(filePath: string): Promise<boolean> {
 
 /** List files matching glob patterns. */
 export async function globFiles(patterns: string | string[], options: GlobOptions = {}): Promise<string[]> {
+  const ignore = [
+    ...(options.excludeGenerated ? GENERATED_FOLDER_IGNORES : []),
+    ...(options.ignore ?? []),
+  ];
+
   const files = await fg(patterns, {
     cwd: options.cwd ?? process.cwd(),
     onlyFiles: true,
     unique: true,
     dot: options.dot ?? false,
-    ignore: options.ignore,
+    ignore,
   });
 
-  return files.map(file => file.split(path.sep).join('/')).sort();
+  return files.map(file => file.replaceAll('\\', '/')).sort();
 }
 
 /** Recursively list all files in a directory matching a glob pattern */
@@ -90,11 +120,19 @@ export async function removeRecursive(targetPath: string): Promise<void> {
 }
 
 /** Move a file atomically (rename) with fallback to copy+delete */
-export async function moveFileAtomic(srcPath: string, destPath: string): Promise<void> {
+export async function moveFileAtomic(
+  srcPath: string,
+  destPath: string,
+  ops: Pick<AtomicFileSystemOps, 'renameSync'> = defaultAtomicOps,
+): Promise<void> {
   await ensureDir(path.dirname(destPath));
   try {
-    fs.renameSync(srcPath, destPath); // atomic on same filesystem
-  } catch {
+    ops.renameSync(srcPath, destPath); // atomic on same filesystem
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EXDEV') {
+      throw error;
+    }
+
     // Cross-filesystem fallback
     const content = await fs.promises.readFile(srcPath);
     await writeFileAtomic(destPath, content as Buffer);

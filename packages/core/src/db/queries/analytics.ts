@@ -129,6 +129,22 @@ export async function saveUserRating(params: { loopId: number; rating: number; c
   db.prepare('UPDATE loop_history SET user_rating = ? WHERE id = ?').run(params.rating, params.loopId);
 }
 
+/** Get user ratings */
+export async function getUserRatings(options?: { loopId?: number }): Promise<Record<string, unknown>[]> {
+  const db = getDb();
+
+  let sql = 'SELECT * FROM user_ratings WHERE 1=1';
+  const params: unknown[] = [];
+
+  if (options?.loopId) {
+    sql += ` AND loop_id = ?`;
+    params.push(options.loopId);
+  }
+
+  sql += ` ORDER BY created_at DESC, id DESC`;
+  return db.prepare(sql).all(...params) as Record<string, unknown>[];
+}
+
 // ============================================================
 // DATABASE QUERY ANALYSIS QUERIES
 // ============================================================
@@ -166,6 +182,40 @@ export async function saveQueryAnalysis(params: {
 // ============================================================
 
 /** Get active prompt version for a type/model/featureType */
+export async function createPromptVersion(params: {
+  promptType: string;
+  model?: string;
+  featureType?: string;
+  version: string;
+  content: string;
+  successRate?: number;
+  avgTurns?: number;
+  avgCost?: number;
+  sampleCount?: number;
+  isActive?: boolean;
+}): Promise<{ id: number }> {
+  const db = getDb();
+  const result = db.prepare(`
+    INSERT INTO prompt_versions (
+      prompt_type, model, feature_type, version, content, success_rate,
+      avg_turns, avg_cost, sample_count, is_active
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    params.promptType,
+    sqlNullable(params.model),
+    sqlNullable(params.featureType),
+    params.version,
+    params.content,
+    params.successRate ?? null,
+    params.avgTurns ?? null,
+    params.avgCost ?? null,
+    params.sampleCount ?? 0,
+    params.isActive === undefined ? 1 : Number(params.isActive)
+  );
+
+  return { id: result.lastInsertRowid as number };
+}
+
 export async function getActivePromptVersion(
   promptType: string,
   model?: string,

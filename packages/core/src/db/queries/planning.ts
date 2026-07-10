@@ -7,7 +7,7 @@ import { sqlNullable, sqlJsonString } from './sql-values.js';
 
 /** Save planning history */
 export async function savePlanningHistory(params: {
-  featureId?: number;
+  featureId: string | number;
   planningModel?: string;
   planVersion?: number | null;
   taskCount?: number | null;

@@ -8,9 +8,16 @@ import { sqlNullable, sqlBoolean } from './sql-values.js';
 import { buildUpdate } from './updates.js';
 
 const LOOP_UPDATE_COLUMNS = {
+  featureSummary: 'feature_summary',
+  featureKeywords: 'feature_keywords',
+  featureType: 'feature_type',
+  language: 'language',
   primaryModel: 'primary_model',
+  primaryProvider: 'primary_provider',
   verifierModel: 'verifier_model',
+  verifierProvider: 'verifier_provider',
   fallbackUsed: 'fallback_used',
+  fallbackModel: 'fallback_model',
   totalTurns: 'total_turns',
   success: 'success',
   failureReason: 'failure_reason',
@@ -25,57 +32,114 @@ const LOOP_UPDATE_COLUMNS = {
   testCoveragePct: 'test_coverage_pct',
   uncertainTagsFound: 'uncertain_tags_found',
   uncertainTagsResolved: 'uncertain_tags_resolved',
+  userRating: 'user_rating',
+  planningLoopId: 'planning_loop_id',
   completedAt: 'completed_at',
 } as const;
 
+export interface CreateLoopOptions {
+  featureSummary?: string;
+  featureKeywords?: string;
+  featureType?: string;
+  language?: string;
+  primaryModel?: string;
+  primaryProvider?: string;
+  verifierModel?: string;
+  verifierProvider?: string;
+  fallbackUsed?: boolean;
+  fallbackModel?: string;
+  planningLoopId?: number;
+}
+
+export interface LoopUpdate {
+  featureSummary: string;
+  featureKeywords: string;
+  featureType: string;
+  language: string;
+  primaryModel: string;
+  primaryProvider: string;
+  verifierModel: string;
+  verifierProvider: string;
+  fallbackUsed: boolean;
+  fallbackModel: string;
+  totalTurns: number;
+  success: boolean;
+  failureReason: string;
+  durationSeconds: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCostUsd: number;
+  commitHash: string;
+  branchName: string;
+  prUrl: string;
+  qualityGatePassed: boolean;
+  testCoveragePct: number;
+  uncertainTagsFound: number;
+  uncertainTagsResolved: number;
+  userRating: number;
+  planningLoopId: number;
+  completedAt: string;
+}
+
+export type CompleteLoopData = Partial<
+  Pick<
+    LoopUpdate,
+    | 'totalTurns'
+    | 'durationSeconds'
+    | 'totalInputTokens'
+    | 'totalOutputTokens'
+    | 'totalCostUsd'
+    | 'commitHash'
+    | 'branchName'
+    | 'prUrl'
+    | 'qualityGatePassed'
+    | 'testCoveragePct'
+    | 'uncertainTagsFound'
+    | 'uncertainTagsResolved'
+    | 'userRating'
+  >
+>;
+
 /** Create a new loop record and return the ID */
-export async function createLoop(
-  featureId: string,
-  options?: {
-    primaryModel?: string;
-    verifierModel?: string;
-    fallbackUsed?: boolean;
-  }
-): Promise<{ id: number }> {
+export async function createLoop(featureId: string, options: CreateLoopOptions = {}): Promise<{ id: number }> {
   const db = getDb();
   const stmt = db.prepare(`
-    INSERT INTO loop_history (feature_id, primary_model, verifier_model, fallback_used)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO loop_history (
+      feature_id,
+      feature_summary,
+      feature_keywords,
+      feature_type,
+      language,
+      primary_model,
+      primary_provider,
+      verifier_model,
+      verifier_provider,
+      fallback_used,
+      fallback_model,
+      planning_loop_id
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const result = stmt.run(
     featureId,
-    sqlNullable(options?.primaryModel),
-    sqlNullable(options?.verifierModel),
-    sqlBoolean(options?.fallbackUsed)
+    sqlNullable(options.featureSummary),
+    sqlNullable(options.featureKeywords),
+    sqlNullable(options.featureType),
+    sqlNullable(options.language),
+    sqlNullable(options.primaryModel),
+    sqlNullable(options.primaryProvider),
+    sqlNullable(options.verifierModel),
+    sqlNullable(options.verifierProvider),
+    sqlBoolean(options.fallbackUsed),
+    sqlNullable(options.fallbackModel),
+    options.planningLoopId ?? null
   );
   return { id: result.lastInsertRowid as number };
 }
 
 /** Update a loop record */
-export async function updateLoop(
-  id: number,
-  updates: Partial<{
-    primaryModel: string;
-    verifierModel: string;
-    fallbackUsed: boolean;
-    totalTurns: number;
-    success: boolean;
-    failureReason: string;
-    durationSeconds: number;
-    totalInputTokens: number;
-    totalOutputTokens: number;
-    totalCostUsd: number;
-    commitHash: string;
-    branchName: string;
-    prUrl: string;
-    qualityGatePassed: boolean;
-    testCoveragePct: number;
-    uncertainTagsFound: number;
-    uncertainTagsResolved: number;
-    completedAt: string;
-  }>
-): Promise<void> {
+export async function updateLoop(id: number, updates: Partial<LoopUpdate>): Promise<void> {
   const db = getDb();
 
   const updateResult = buildUpdate(updates, LOOP_UPDATE_COLUMNS, {
@@ -87,6 +151,15 @@ export async function updateLoop(
   const values = [...updateResult.values, id];
   const sql = `UPDATE loop_history SET ${updateResult.setSql} WHERE id = ?`;
   db.prepare(sql).run(...values);
+}
+
+/** Mark a loop as complete and store final metrics */
+export async function completeLoop(id: number, data: CompleteLoopData = {}): Promise<void> {
+  await updateLoop(id, {
+    ...data,
+    success: true,
+    completedAt: new Date().toISOString(),
+  });
 }
 
 /** Fail a loop record with reason and bugs */
@@ -111,7 +184,7 @@ export async function failLoop(
     for (const bug of data.bugs as Array<{ description: string; file?: string }>) {
       insertUncertain.run(
         id,
-        bug.file || 'unknown',
+        bug.file ?? 'unknown',
         bug.description
       );
     }

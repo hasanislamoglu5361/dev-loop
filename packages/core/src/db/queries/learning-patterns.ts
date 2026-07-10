@@ -19,6 +19,20 @@ const ERROR_PATTERN_SORTS = {
 
 type ErrorPatternSortKey = keyof typeof ERROR_PATTERN_SORTS;
 
+function sqlJsonArray(value: unknown[] | string | undefined): string | null {
+  if (value === undefined) return null;
+  if (Array.isArray(value)) return JSON.stringify(value);
+
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) return value;
+  } catch {
+    // Fall through and store a plain string as a one-item array.
+  }
+
+  return JSON.stringify([value]);
+}
+
 function buildErrorPatternOrderBy(orderBy: string = 'seenCount', direction: string = 'desc'): string {
   const column = ERROR_PATTERN_SORTS[orderBy as ErrorPatternSortKey];
   if (!column) {
@@ -53,6 +67,8 @@ export async function getErrorPatterns(
   if (options?.autoInject !== undefined) {
     sql += ` AND auto_inject = ?`;
     params.push(options.autoInject ? 1 : 0);
+  } else {
+    sql += ` AND auto_inject = 1`;
   }
 
   // Filter by feature keywords using LIKE on JSON array
@@ -90,7 +106,7 @@ export async function createErrorPattern(params: {
   fixDescription: string;
   fixExample?: string;
   versionContext?: string;
-  versionHistory?: string;
+  versionHistory?: unknown[] | string;
   seenCount?: number;
   autoInject?: boolean;
 }): Promise<{ id: number }> {
@@ -115,9 +131,9 @@ export async function createErrorPattern(params: {
     params.fixDescription,
     sqlNullable(params.fixExample),
     sqlNullable(params.versionContext),
-    sqlJsonString(params.versionHistory ?? '[]'),
-    params.seenCount ?? null,
-    sqlBoolean(params.autoInject)
+    sqlJsonArray(params.versionHistory ?? []),
+    params.seenCount ?? 1,
+    sqlBoolean(params.autoInject ?? true)
   );
 
   return { id: result.lastInsertRowid as number };
@@ -147,7 +163,20 @@ export async function updateErrorPattern(
   } as const;
 
   type ErrorPatternUpdateKey = keyof typeof ERROR_PATTERN_UPDATE_COLUMNS;
-  const updateResult = buildUpdate(updates as Partial<Record<ErrorPatternUpdateKey, unknown>>, ERROR_PATTERN_UPDATE_COLUMNS);
+  const updateResult = buildUpdate(updates as Partial<Record<ErrorPatternUpdateKey, unknown>>, ERROR_PATTERN_UPDATE_COLUMNS, {
+    errorLabel: 'error pattern update',
+    serialize: (key, value) => {
+      if (key === 'featureKeywords' || key === 'versionHistory') {
+        return sqlJsonArray(value as unknown[] | string | undefined);
+      }
+
+      if (key === 'autoInject') {
+        return Number(value);
+      }
+
+      return value;
+    },
+  });
   if (!updateResult) return;
 
   const values = [...updateResult.values, id];
@@ -213,6 +242,80 @@ export async function createSuccessPattern(params: {
   );
 
   return { id: result.lastInsertRowid as number };
+}
+
+/** Get distinct models observed in learning patterns */
+export async function getDistinctModels(): Promise<string[]> {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT DISTINCT model FROM (
+      SELECT model FROM error_patterns
+      UNION
+      SELECT model FROM success_patterns
+    )
+    WHERE model IS NOT NULL
+    ORDER BY model ASC
+  `).all() as Array<{ model: string }>;
+
+  return rows.map(row => row.model);
+}
+
+/** Copy active error patterns from one model to another */
+export async function copyErrorPatterns(params: {
+  fromModel: string;
+  toModel: string;
+  toProvider?: string;
+}): Promise<{ copied: number }> {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT *
+    FROM error_patterns
+    WHERE model = ? AND auto_inject = 1
+    ORDER BY id ASC
+  `).all(params.fromModel) as Array<{
+    pattern_hash: string;
+    provider: string | null;
+    feature_keywords: string;
+    language: string | null;
+    error_description: string;
+    error_category: string | null;
+    fix_description: string;
+    fix_example: string | null;
+    version_context: string | null;
+    version_history: string | null;
+    seen_count: number | null;
+    auto_inject: number | null;
+  }>;
+
+  const stmt = db.prepare(`
+    INSERT OR IGNORE INTO error_patterns (
+      pattern_hash, model, provider, feature_keywords, language, error_description,
+      error_category, fix_description, fix_example, version_context, version_history,
+      seen_count, auto_inject
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  let copied = 0;
+  for (const row of rows) {
+    const result = stmt.run(
+      `${row.pattern_hash}:${params.toModel}`,
+      params.toModel,
+      params.toProvider ?? row.provider,
+      row.feature_keywords,
+      row.language,
+      row.error_description,
+      row.error_category,
+      row.fix_description,
+      row.fix_example,
+      row.version_context,
+      row.version_history,
+      row.seen_count,
+      row.auto_inject
+    );
+    copied += result.changes;
+  }
+
+  return { copied };
 }
 
 // ============================================================

@@ -1860,6 +1860,517 @@ npm run typecheck
 
 Expected result: all commands exit `0`, and there are no missing-export or failed-url errors for `../db/queries.js`.
 
+## REVIEW/FEATURE026-099 Audit Fixes (2026-07-10)
+
+On 2026-07-09/10, all 74 pending items in `REVIEW/` (FEATURE026 through FEATURE099) were independently re-verified against the actual current source, not the self-reported "Implementation Notes" or a prior reviewer's "PASSING" verdict. 62 were genuinely correct. The 12 sections below (38-49) document the real defects found, fixed with TDD, and folded back into this knowledge base so the same mistakes are not repeated.
+
+### 38. Optional interface method invoked without a guard in test
+
+Observed problem:
+
+In `packages/core/src/__tests__/models/feature041-model-provider.test.ts:96`, the test called `provider.streamGenerate({...})` directly in a `for await` loop. `ModelProvider.streamGenerate` is declared optional (`streamGenerate?(params): AsyncIterable<ModelStreamEvent>` in `packages/core/src/models/types.ts:94`), so `tsc --noEmit -p packages/core/tsconfig.json` failed with `TS2722: Cannot invoke an object which is possibly 'undefined'`.
+
+Why it is wrong:
+
+- Calling an optional method without narrowing violates `strictNullChecks`.
+- Vitest (esbuild) doesn't type-check, so the bug was invisible at test-run time and only surfaced under real `tsc`.
+
+Why local models make this mistake:
+
+- They validate against the fast test runner, not the strict compiler, and treat a green `vitest run` as proof the code type-checks.
+- They pattern-match "the interface says this field exists" and skip the optional-modifier (`?`) implication that callers must guard it.
+
+Correct fix:
+
+Add a runtime guard (or throw) before invoking the optional method, which also documents the "streaming is optional" contract being tested.
+
+```typescript
+expect(provider.streamGenerate).toEqual(expect.any(Function));
+if (!provider.streamGenerate) {
+  throw new Error('Expected FakeProvider to implement streamGenerate for this test.');
+}
+for await (const event of provider.streamGenerate({ model: 'fake-model', messages: [{ role: 'user', content: 'stream' }] })) {
+  events.push(event);
+}
+```
+
+Verification:
+
+```bash
+cd packages/core && npx vitest run models/feature041
+npx tsc --noEmit -p packages/core/tsconfig.json
+```
+
+### 39. Direct `as Type` cast to an incompatible DOM shape
+
+Observed problem:
+
+In `packages/core/src/__tests__/lmstudio/feature044-lmstudio.test.ts:15-26`, the `streamResponse()` test helper built a partial fake `Response` (only `ok`, `status`, `statusText`, `body`) and force-cast it with `as Response`. `tsc --noEmit` failed with `TS2352: Conversion ... may be a mistake because neither type sufficiently overlaps with the other`, since the mock is missing `headers`, `type`, `url`, etc., and its `body` is an `AsyncGenerator` rather than a `ReadableStream<Uint8Array> | null`.
+
+Why it is wrong:
+
+- TypeScript only allows a direct assertion between two types when one is assignable to (or a subtype of) the other; a partial mock isn't "sufficiently overlapping" with the full DOM `Response` interface.
+- Vitest's esbuild transform strips types, so the invalid cast never failed at test-run time, only under real `tsc`.
+
+Why local models make this mistake:
+
+- They generate minimal mocks matching only the fields actually read at runtime, and reach for `as Type` to silence the compiler without checking whether the assertion is structurally legal.
+- They copy a "double-cast via unknown" idiom inconsistently, using a direct cast in one file and the safe form elsewhere.
+
+Correct fix:
+
+Route the assertion through `unknown` first, exactly as TypeScript's own error message suggests, since the test only needs to satisfy a narrower `FetchLike` contract, not the full `Response` shape.
+
+```typescript
+function streamResponse(chunks: string[]): Response {
+  return {
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    body: (async function* () {
+      for (const chunk of chunks) yield new TextEncoder().encode(chunk);
+    })(),
+  } as unknown as Response;
+}
+```
+
+Verification:
+
+```bash
+cd packages/core && npx vitest run src/__tests__/lmstudio
+npx tsc --noEmit -p packages/core/tsconfig.json
+```
+
+### 40. Implicit-return arrow callback leaks `Array.push`'s number return type
+
+Observed problem:
+
+In `packages/core/src/__tests__/vram/feature046-vram.test.ts:91-92`, test hooks were written as single-expression arrows `async model => hooks.push(...)`. Because `Array.prototype.push` returns the new array length (`number`), these hooks inferred as `(model: string) => Promise<number>`, which is not assignable to `VramManager`'s declared `onLoad`/`onUnload` signature `(model: string) => void | Promise<void>` (`packages/core/src/models/vram.ts:35-36`). `tsc --noEmit` reported two `TS2322` errors.
+
+Why it is wrong:
+
+- A single-expression arrow function's body value becomes its (wrapped-in-Promise) return value; `push`'s numeric return leaks into the inferred type even though the caller only wanted a side effect.
+- `void`-returning callback types do not automatically discard mismatched non-void return values in this position — the assignability check still fails on `Promise<number>` vs `Promise<void>`.
+
+Why local models make this mistake:
+
+- They favor terse single-expression arrows for "fire and forget" callbacks without checking what the wrapped expression returns.
+- They don't realize that satisfying a `(...) => void` parameter type by supplying a function that returns a non-`void` value requires either braces or an explicit discard, when the mismatch is wrapped in a `Promise`.
+
+Correct fix:
+
+Wrap the hook bodies in braces so the arrow explicitly resolves to `void` instead of `push`'s return value.
+
+```typescript
+onLoad: async model => { hooks.push(`load:${model}`); },
+onUnload: async model => { hooks.push(`unload:${model}`); },
+```
+
+Verification:
+
+```bash
+cd packages/core && npx vitest run src/__tests__/vram
+npx tsc --noEmit -p packages/core/tsconfig.json
+```
+
+### 41. Public method's declared parameter type narrower than what it internally force-casts to
+
+Observed problem:
+
+`ClaudeCodeCliVerifier.review()` in `packages/core/src/models/verifier/claude-code-cli.ts:37-38` was typed to accept `ReviewParams` but immediately did `const claudeParams = params as ClaudeReviewParams;` to reach the wider fields (`diff`, `testOutput`, `uncertainTags`, `mcpUsage`) that `buildClaudeReviewPrompt` requires. Any caller passing those fields as an object literal (as `packages/core/src/__tests__/claude-verifier/feature054-claude-verifier.test.ts:46-54` does) hit `TS2353: Object literal may only specify known properties, and 'diff' does not exist in type 'ReviewParams'`.
+
+Why it is wrong:
+
+- The public signature lied about what the method actually needed; the internal `as ClaudeReviewParams` cast is an unsafe escape hatch masking a real type mismatch, not a legitimate narrowing.
+- Every realistic caller that needs to pass `diff`/`testOutput`/`uncertainTags`/`mcpUsage` — the entire point of this verifier — cannot legally construct the argument as an object literal.
+
+Why local models make this mistake:
+
+- They implement to satisfy an interface (`IVerifier.review(params: ReviewParams)`) literally, then patch the internal type gap with a cast instead of widening the concrete class's method signature (not realizing TypeScript checks method parameters bivariantly, so narrowing here is legal).
+- Vitest's type-stripped transform hides the excess-property-check failure, so the cast "worked" under the test runner they used to self-verify.
+
+Correct fix:
+
+Widen the declared parameter type on the implementing class to `ClaudeReviewParams` and drop the internal cast.
+
+```typescript
+export class ClaudeCodeCliVerifier implements IVerifier {
+  async review(params: ClaudeReviewParams): Promise<ReviewResult> {
+    const prompt = buildClaudeReviewPrompt(params);
+    // ...
+  }
+}
+```
+
+Verification:
+
+```bash
+cd packages/core
+npx tsc --noEmit -p tsconfig.json
+npx vitest run claude-verifier
+```
+
+### 42. A stated acceptance criterion with no implementation, and a naming trap in the fix
+
+Observed problem:
+
+FEATURE055's acceptance criterion "Verifier factory can choose any configured verifier" had no corresponding code. Four classes (`ClaudeCodeCliVerifier`, `ClaudeCliVerifier`, `CodexCliVerifier`, `ApiVerifier`) all implement `IVerifier` and are individually exported from `models/verifier/index.ts`, `models/index.ts`, and `src/index.ts`, but `grep -rn "factory\|Factory" packages/core/src` (excluding tests) returned nothing. `engine.ts`'s `selectVerifier` dependency hook picks a model/provider pair for generation — an unrelated concept — and never constructs any of the four verifier classes.
+
+Why it is wrong:
+
+- Every future caller (CLI, loop engine, config-driven selection) would have to independently import all four classes and hand-roll the same kind-to-class switch, defeating the point of a factory.
+- The acceptance criterion was treated as satisfied by the review process even though no code path exercised it — a documentation/implementation gap.
+
+Why local models make this mistake:
+
+- They implement the concrete classes listed in "Implementation Notes" and stop, because those are the tangible, easy-to-verify units — a factory is an aggregation step that's easy to forget once the parts exist.
+- They pattern-match "acceptance criteria" against the classes present rather than tracing whether a function actually satisfies the criterion's verb ("can choose") — no caller, no choice, no criterion met.
+
+Correct fix:
+
+Add `packages/core/src/models/verifier/factory.ts` exporting `createVerifier` over a discriminated union keyed by `kind`. Critically, the union type must NOT be named `VerifierConfig` — that name is already taken by an unrelated type in `src/types.ts` (a quality-gate config re-exported from `src/index.ts`). Reusing the name would produce a duplicate-export collision once wired through `models/index.ts` → `src/index.ts`. Name it `VerifierFactoryConfig` instead — always grep for an export name across the whole package's barrel files before introducing it, not just within the file being edited.
+
+```typescript
+export type VerifierFactoryConfig =
+  | { kind: 'claude-code-cli'; options: ClaudeCliVerifierOptions }
+  | { kind: 'claude-cli'; options: ClaudeCliVerifierOptions }
+  | { kind: 'codex-cli'; options: CodexCliVerifierOptions }
+  | { kind: 'api-verifier'; options: ApiVerifierOptions };
+
+export function createVerifier(config: VerifierFactoryConfig): IVerifier {
+  switch (config.kind) {
+    case 'claude-code-cli': return new ClaudeCodeCliVerifier(config.options);
+    case 'claude-cli': return new ClaudeCliVerifier(config.options);
+    case 'codex-cli': return new CodexCliVerifier(config.options);
+    case 'api-verifier': return new ApiVerifier(config.options);
+    default: {
+      const exhaustive: never = config;
+      throw new Error(`Unknown verifier kind: ${JSON.stringify(exhaustive)}`);
+    }
+  }
+}
+```
+
+Verification:
+
+```bash
+cd packages/core
+npx vitest run verifier-factory
+npx tsc --noEmit -p tsconfig.json
+```
+
+### 43. Fallback provider used as fallback model name across four call sites
+
+Observed problem:
+
+`runFallbackPath()` in `packages/core/src/runtime/engine.ts` never read `options.config.fallback.model`. Instead it substituted `options.config.fallback.provider` — an enum of `'claude-code-cli' | 'codex-cli' | 'api'` — as the "model" in four places: the `fallbackGenerate()` request, the `createLoopTurn()` call for the fallback turn, `saveMcpScore()`, and `updateLoop()` on both the success and failure exit paths. A user configuring `fallback: { provider: api, model: gpt-4-turbo }` never got `gpt-4-turbo` used or recorded anywhere — every site silently stored the literal string `"api"`.
+
+Why it is wrong:
+
+- `provider` and `model` are distinct, independently-defined fields in `fallbackSectionSchema`; conflating them means a real adapter dispatching on `request.model.model` would try to call a model literally named `"api"`.
+- Cost/quality analysis of "which model rescued this feature" becomes impossible since `loop_history.fallback_model` only ever contains the provider name, never the configured model.
+
+Why local models make this mistake:
+
+- `provider` and `model` are adjacent, same-typed (`string`) config fields with overlapping names, and it's easy to grab the one already in scope (`provider`, used earlier in the same object literal) rather than checking whether a sibling field exists.
+- The bug is invisible in fake/mocked tests where `fallbackGenerate` and friends don't actually branch on the model string, so nothing fails until a real adapter or a DB inspection is involved.
+
+Correct fix:
+
+Compute `fallbackModelName` once from `options.config.fallback.model ?? options.config.fallback.provider`, and use that variable everywhere a fallback model name is needed instead of re-reading `.provider`.
+
+```typescript
+// before
+model: { provider: options.config.fallback.provider, model: options.config.fallback.provider },
+// ...model: options.config.fallback.provider (createLoopTurn, saveMcpScore)
+// ...fallbackModel: options.config.fallback.provider (updateLoop x2)
+
+// after
+const fallbackModelName = options.config.fallback.model ?? options.config.fallback.provider;
+model: { provider: options.config.fallback.provider, model: fallbackModelName },
+// ...model: fallbackModelName (createLoopTurn, saveMcpScore)
+// ...fallbackModel: fallbackModelName (updateLoop x2)
+```
+
+Verification:
+
+```bash
+cd packages/core && npx vitest run src/__tests__/feature066-engine-fallback.test.ts
+npx tsc --noEmit -p packages/core/tsconfig.json
+```
+
+### 44. Fine-tune JSONL export only redacted `sk-` tokens
+
+Observed problem:
+
+`packages/core/src/context/prompt-evolution.ts`'s `redactPromptText` (used by `exportFineTuneJsonl`) was a one-line hand-rolled regex matching only `\bsk-[A-Za-z0-9_-]+\b`. It ignored the repo's existing shared redaction utility (`packages/core/src/utils/redaction.ts`), so GitHub PATs (`ghp_...`), Slack webhook URLs, and `Bearer ...` headers embedded in exported conversation messages were written verbatim into a durable, shareable JSONL training file.
+
+Why it is wrong:
+
+- Exported fine-tune data is explicitly meant to leave the local environment; any secret shape the narrow regex misses is a permanent leak.
+- The repo already had `redactSecrets`/`safeJsonStringify` with a broader `SECRET_VALUE_PATTERNS` list — duplicating a narrower version instead of importing it is pure regression risk.
+
+Why local models make this mistake:
+
+- They pattern-match the one secret shape visible in the immediate task description (usually `sk-...`, the most iconic "API key" shape) and stop there instead of checking whether the codebase already has a canonical redaction utility.
+- They don't cross-reference sibling files (`utils/redaction.ts`) for existing coverage before writing new logic, so the same narrow regex gets reinvented independently in multiple places (see #45).
+
+Correct fix:
+
+Route through the shared utility rather than a bespoke regex. Because `SECRET_VALUE_PATTERNS`'s webhook/Bearer patterns are anchored (`^...$`) for whole-field matching, they can't catch a secret embedded mid-sentence, so a new non-anchored, substring-replacing export (`redactFreeText`) was added to `utils/redaction.ts` for prose contexts, and both `prompt-evolution.ts` and `notifications/format.ts` (#45) now call it:
+
+```typescript
+// packages/core/src/utils/redaction.ts
+const SECRET_TEXT_SCAN_PATTERNS = [
+  /\bsk-[A-Za-z0-9_-]{20,}\b/g,
+  /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g,
+  /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
+  /https:\/\/hooks\.slack\.com\/services\/\S+/gi,
+  /\bBearer\s+\S+/gi,
+];
+
+export function redactFreeText(text: string): string {
+  let result = text;
+  for (const pattern of SECRET_TEXT_SCAN_PATTERNS) {
+    result = result.replace(pattern, REDACTED);
+  }
+  return result;
+}
+
+// packages/core/src/context/prompt-evolution.ts
+import { redactFreeText } from '../utils/redaction.js';
+
+function redactPromptText(value: string): string {
+  return redactFreeText(value);
+}
+```
+
+**Rule:** any new secret-redaction need in this repo must reuse `utils/redaction.ts` (`redactSecrets`, `safeJsonStringify`, `redactFreeText`), never a fresh regex. This exact bug was independently reinvented twice (#44, #45) before this fix.
+
+Verification:
+
+```bash
+cd packages/core && npx vitest run src/__tests__/feature081-prompt-fine-tune.test.ts
+```
+
+### 45. Notification `detail`/`title` only redacted `sk-`/`password`
+
+Observed problem:
+
+`packages/core/src/notifications/format.ts`'s `redactNotificationText` (applied to `detail`/`title`) used a two-pattern regex (`sk-...` and `password \S+`) while `data` went through `safeJsonStringify`, which has broader coverage (GitHub tokens, Slack webhooks, Bearer headers, key-name-based redaction). A prior review's PASSING verdict claimed both `detail`/`title` and `data` used `safeJsonStringify` — factually wrong for the free-text path.
+
+Why it is wrong:
+
+- `detail`/`title` is exactly the field most likely to carry raw error text/stack traces (e.g. "Webhook delivery failed: https://hooks.slack.com/services/...") — the two-pattern regex left that live webhook URL, or any GitHub PAT, unredacted straight through to Telegram/Slack/email.
+- A stale review claimed full coverage without checking that `detail`/`title` never touches `safeJsonStringify` at all — asserting "safe" without re-deriving the actual code path.
+
+Why local models make this mistake:
+
+- Same shallow pattern-matching failure as #44: the model sees "redact detail" as a small, self-contained task and writes a two-line regex instead of importing existing infrastructure.
+- Review agents that assert "X uses the same mechanism as Y" without actually tracing the call graph rubber-stamp claims that sound plausible but are false — a review verdict is a claim, not evidence (see the Prime Directive at the top of this file).
+
+Correct fix:
+
+Use the shared `redactFreeText` (see #44) for the secret-shaped patterns, then layer the pre-existing `password <value>` word-scan on top since that's a field-shaped leak the token-pattern list doesn't cover in prose:
+
+```typescript
+import { redactFreeText } from '../utils/redaction.js';
+
+function redactNotificationText(value: string): string {
+  return redactFreeText(value)
+    .replace(/\bpassword\s+\S+/gi, 'password [REDACTED]');
+}
+```
+
+Verification:
+
+```bash
+cd packages/core && npx vitest run src/__tests__/feature087-notification-format.test.ts
+```
+
+### 46. Scheduled digest start/stop was never implemented
+
+Observed problem:
+
+`packages/core/src/notifications/channels.ts` defined `EmailChannelConfig.scheduled_digest: { enabled: boolean; cron: string }` and a `stopDigest(timerId)` that just calls `clearInterval` on a handle nothing ever created. `grep -rn "startDigest" packages/core/src` returned zero matches. `stopDigest` itself wasn't even exported from `packages/core/src/index.ts`, making it unreachable dead code. A prior review's Implementation Notes falsely claimed "Added scheduled digest `startDigest` and `stopDigest` helpers," and the paired review's acceptance-criteria checklist silently dropped the "Scheduled digest start/stop" scope item entirely rather than flag it missing.
+
+Why it is wrong:
+
+- The Scope explicitly required "Scheduled digest start/stop"; only half the pair existed, and that half was unreachable from any consumer since it wasn't re-exported at the package root.
+- `scheduled_digest.enabled = true` in config was entirely inert — no code path ever read it, so enabling it silently did nothing, with no error to signal the gap.
+
+Why local models make this mistake:
+
+- Writing the "cleanup" half of a start/stop pair (`stopDigest`) is easy and self-contained; writing `startDigest` requires deciding how to interpret a `cron` string, which is genuinely more design work, so it gets skipped and the Implementation Notes are written as if it were done anyway.
+- A review that checks "does `stopDigest` exist" without checking "is it ever called by anything that starts a matching timer" will pass code that's structurally present but functionally dead.
+
+Correct fix:
+
+Add `startDigest` plus a documented, intentionally-non-general `cronToIntervalMs` shorthand converter (not a full 5-field cron parser — `setInterval` can't express wall-clock alignment anyway), and export both alongside `stopDigest` from the package root:
+
+```typescript
+export function cronToIntervalMs(cron: string): number {
+  const trimmed = cron.trim().toLowerCase();
+  const MINUTE = 60_000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
+  if (trimmed === '@hourly') return HOUR;
+  if (trimmed === '@daily' || trimmed === '@midnight') return DAY;
+  if (trimmed === '@weekly') return 7 * DAY;
+  const m = trimmed.match(/^(?:every\s+)?(\d+)\s*(m|min|minutes?|h|hr|hours?|d|days?)$/);
+  if (m) {
+    const n = Number(m[1]);
+    return m[2].startsWith('m') ? n * MINUTE : m[2].startsWith('h') ? n * HOUR : n * DAY;
+  }
+  return /^\d+$/.test(trimmed) ? Number(trimmed) : DAY;
+}
+
+export function startDigest(
+  config: { enabled: boolean; cron: string },
+  sendDigest: () => void | Promise<void>,
+  scheduler: (fn: () => void, ms: number) => ReturnType<typeof setInterval> = setInterval,
+): ReturnType<typeof setInterval> | undefined {
+  if (!config.enabled) return undefined;
+  return scheduler(() => { void sendDigest(); }, cronToIntervalMs(config.cron));
+}
+```
+
+Both are exported from `packages/core/src/index.ts` alongside `stopDigest`.
+
+Verification:
+
+```bash
+cd packages/core && npx vitest run src/__tests__/feature088-notifications-digest.test.ts
+```
+
+### 47. Missing `dev-loop ui` CLI command despite a working UI server module
+
+Observed problem:
+
+`packages/ui/src/server/index.ts` implemented a fully working `startUiServer`/`createUiServer` Fastify server with its own passing tests, but `packages/cli/src/cli.ts` (`createCli`) registered `init, setup, run, watch, verify, test, quality, resume, replay, config, logs, patterns, export, query, voice, codemap, db, config-check` — no `ui` command. `packages/cli/package.json` dependencies listed only `@dev-loop/core` and `commander`, not `@dev-loop/ui`, so the CLI package could not even import the server module.
+
+Why it is wrong:
+
+- The feature's stated acceptance criterion ("`dev-loop ui` can start backend") was structurally unmeetable — the binary built from `packages/cli/src/main.ts` had no code path to `startUiServer` at all.
+- A passing unit test for the server module created a false sense that the feature was done, because it called `startUiServer` directly, not through the shipped CLI.
+
+Why local models make this mistake:
+
+- It's easy to treat "the server module works and has tests" as equivalent to "the CLI command works," when the two are only connected by an import and a `program.command(...)` registration that was simply never written.
+- Cross-package wiring (adding a workspace dependency + importing it in a sibling package) is invisible from within a single package's test suite, so it's easy to skip when working file-by-file instead of end-to-end from the user-facing entry point.
+
+Correct fix:
+
+Add `@dev-loop/ui` to `packages/cli/package.json` dependencies, import `startUiServer` in `cli.ts`, and register a `ui` command that calls it with `--host`/`--port` options, following the existing `-p/--project-dir` option-declaration style used by every other command. Made the server starter injectable via `CreateCliOptions.startUiServer` (mirroring the existing `workflows`/`watchFactory` injection pattern) so tests never bind a real port.
+
+```typescript
+import { startUiServer as defaultStartUiServer } from '@dev-loop/ui';
+import type { UiServerController, UiServerOptions } from '@dev-loop/ui';
+
+export type StartUiServer = (options: UiServerOptions) => Promise<UiServerController>;
+// CreateCliOptions gains: startUiServer?: StartUiServer;
+
+const startUi = options.startUiServer ?? defaultStartUiServer;
+
+program
+  .command('ui')
+  .description('Start the dev-loop web UI backend')
+  .option('-p, --project-dir <dir>', 'project directory', process.cwd())
+  .option('--host <host>', 'host to bind', '127.0.0.1')
+  .option('--port <port>', 'port to bind', '3747')
+  .action(async (commandOptions: { projectDir: string; host: string; port: string }) => {
+    const server = await startUi({ host: commandOptions.host, port: Number(commandOptions.port) });
+    console.log(`dev-loop UI backend listening on http://${server.address.host}:${server.address.port}`);
+  });
+```
+
+Verification:
+
+```bash
+cd packages/cli && npx vitest run src/__tests__
+npx tsc --noEmit -p packages/cli/tsconfig.json
+```
+
+### 48. No Vite/DOM entry point mounts the React app, and `useWebSocket`'s `onEvent` was dead code
+
+Observed problem:
+
+`packages/ui` had `vite` and `@vitejs/plugin-react` as devDependencies but no `vite.config.ts`, `index.html`, or `main.tsx` anywhere — `packages/ui/src/client/index.ts` only re-exported `AppShell`, `DashboardView`, `api`, `queryClient`, `useWebSocket` as library pieces, never assembling them into a page. Separately, `useWebSocket.ts` built a full event-registration system (`onEvent`, backed by `eventHandlersRef`, dispatched on message receipt) but its `return` statement omitted `onEvent` — defined and used internally but never exposed, so `const { onEvent } = useWebSocket()` would be `undefined`.
+
+Why it is wrong:
+
+- "UI starts and shows dashboard from API" was claimed as done, but there was no browser-loadable artifact — no HTML file, no bundler config, no code calling `ReactDOM.createRoot(...).render(...)`.
+- `onEvent`'s cleanup-returning closure was fully implemented and unit-testable in isolation, but omitting it from the return object made the entire registration API unreachable by any consumer — pure dead code despite being "done."
+
+Why local models make this mistake:
+
+- Writing components and hooks in isolation (verified via `renderToStaticMarkup` in tests, which never exercises `useEffect` or the full return contract) can pass tests while never being wired into a real running app — the gap between "component renders" and "app boots in a browser" is easy to miss without an actual bootstrap step.
+- Adding a new field to a function's return object requires touching two places (the value construction and the type declaration); it's an easy one-line omission that compiles fine until the interface is checked strictly against every call site.
+
+Correct fix:
+
+Add `onEvent` to both the `UseWebSocketResult` interface and the hook's return statement; add a minimal Vite bootstrap (`index.html` loading `/src/client/main.tsx`, `main.tsx` wrapping `AppShell` in `QueryClientProvider` using the existing `queryClient` export, and `vite.config.ts` using `@vitejs/plugin-react` with `build.outDir: 'dist-client'` so it doesn't collide with the `tsc`-driven library `dist/`).
+
+```typescript
+interface UseWebSocketResult<T = unknown> {
+  data: T | null;
+  isConnected: boolean;
+  lastMessage: MessageEvent | null;
+  sendMessage: (message: string) => void;
+  clearData: () => void;
+  onEvent: (event: WebSocketEvent, handler: EventHandler) => () => void;
+}
+// ...
+return { data, isConnected, lastMessage, sendMessage, clearData, onEvent };
+```
+
+Verification:
+
+```bash
+cd packages/ui && npx vite build          # emits dist-client/index.html + JS bundle
+npx vitest run                            # full suite, incl. new onEvent test
+npx tsc --noEmit -p packages/ui/tsconfig.json
+```
+
+### 49. Ten operational UI pages had zero render tests despite a review claiming coverage
+
+Observed problem:
+
+`packages/ui/src/{loops,models,planning,uncertain,patterns,mcp,quality,benchmark,reports,settings}/` contained 10 fully-implemented page components (`LoopDetail`, `ModelsPage`, `PlanningPage`, `UncertainTags`, `PatternsPage`, `McpPanel`, `QualityPage`, `BenchmarkPage`, `ReportsPage`, `SettingsPage`) with no `__tests__` directories at all. The feature's review claimed "Test route rendering for each page" and included a "Test Results" block — but that block was a byte-for-byte copy of an unrelated feature's test output (same 3 files, same 8 tests, same duration). A repo-wide grep for any of the 10 component names inside a test file returned nothing.
+
+Why it is wrong:
+
+- A review marked "Test Results ✅" was pasted from a different feature's run rather than executed against the claimed components — the checklist item was never actually true.
+- Real correctness logic went unverified: `QualityPage`'s inverse pass/fail semantics for lower-is-better metrics, `SettingsPage`'s recursive secret redaction, `BenchmarkPage`'s `Infinity` sentinel for missing-cost entries, and `UncertainTags`'s three-way Accept/Reject/Defer flow could all regress silently with `npm test` staying green.
+
+Why local models make this mistake:
+
+- It's far cheaper to copy a plausible-looking "Test Results" block from a nearby recent feature than to actually invoke the test runner and capture real output, especially when optimizing for review turnaround.
+- A model reviewing its own claimed acceptance criteria doesn't independently re-derive "does a test file import this exact component," so a stale/copied result block passes an incurious self-check. This is the same failure mode as the "review documents are claims, not evidence" Prime Directive at the top of this file — it applies to a model's own reviews of its own work, not just to reading someone else's.
+
+Correct fix:
+
+Write real `renderToStaticMarkup` tests per component: default/empty-state render, populated-state render asserting real content strings, plus one assertion per genuine special-case behavior actually found in the source (never invented). Example, for `QualityPage`'s inverse metric semantics:
+
+```typescript
+it('applies inverse pass/fail semantics for metrics where lower is better', () => {
+  const passing = renderToStaticMarkup(
+    <QualityPage checks={[{ name: 'lint', passed: true }]} metrics={{ testCoverage: 90, lintErrors: 0, complexityAvg: 5 }} />,
+  );
+  const failing = renderToStaticMarkup(
+    <QualityPage checks={[{ name: 'lint', passed: true }]} metrics={{ testCoverage: 90, lintErrors: 12, complexityAvg: 25 }} />,
+  );
+  expect(passing).toContain('metric-card pass');
+  expect(passing).not.toContain('metric-card fail');
+  expect(failing).toContain('metric-card fail');
+});
+```
+
+Verification:
+
+```bash
+cd packages/ui && npx vitest run src/loops/__tests__ src/models/__tests__ src/planning/__tests__ src/uncertain/__tests__ src/patterns/__tests__ src/mcp/__tests__ src/quality/__tests__ src/benchmark/__tests__ src/reports/__tests__ src/settings/__tests__
+npx tsc --noEmit -p packages/ui/tsconfig.json
+```
+
 ## Testing Rules for This Repo
 
 ### Use Temporary Directories for Mutating Tests

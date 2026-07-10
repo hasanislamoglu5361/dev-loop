@@ -48,13 +48,20 @@ export async function getDbStats(): Promise<{ size: number; tableCount: number }
 /** Execute a raw SQL query and return results */
 export async function rawQuery(sql: string): Promise<Record<string, unknown>[]> {
   const db = getDb();
+  const trimmed = sql.trim();
+  const withoutSingleTrailingSemicolon = trimmed.endsWith(';') ? trimmed.slice(0, -1).trim() : trimmed;
+
   // Security: only allow SELECT statements
-  if (!sql.trim().toUpperCase().startsWith('SELECT')) {
+  if (!withoutSingleTrailingSemicolon.toUpperCase().startsWith('SELECT')) {
     throw new Error('Only SELECT queries are allowed');
   }
 
+  if (withoutSingleTrailingSemicolon.includes(';')) {
+    throw new Error('Raw reporting queries must be a single SELECT statement');
+  }
+
   try {
-    return db.prepare(sql).all() as Record<string, unknown>[];
+    return db.prepare(withoutSingleTrailingSemicolon).all() as Record<string, unknown>[];
   } catch (err) {
     throw new Error(`Query execution failed: ${(err as Error).message}`);
   }

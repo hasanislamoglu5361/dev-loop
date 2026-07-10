@@ -22,8 +22,7 @@ const LOOP_TURN_UPDATE_COLUMNS = {
   mcpServersUsed: 'mcp_servers_used',
 } as const;
 
-/** Create a new loop turn record */
-export async function createLoopTurn(params: {
+export interface CreateLoopTurnParams {
   loopId: number;
   turnNumber: number;
   agent: string;
@@ -39,7 +38,25 @@ export async function createLoopTurn(params: {
   filesChanged?: unknown[];
   uncertainTagsAdded?: number;
   mcpServersUsed?: string[];
-}): Promise<{ id: number }> {
+}
+
+export interface LoopTurnUpdate {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  durationSeconds: number;
+  success: boolean;
+  errorMessage: string;
+  errorType: string;
+  diffSizeLines: number;
+  filesChanged: unknown[];
+  uncertainTagsAdded: number;
+  mcpServersUsed: string[];
+}
+
+/** Create a new loop turn record */
+export async function createLoopTurn(params: CreateLoopTurnParams): Promise<{ id: number }> {
   const db = getDb();
 
   const stmt = db.prepare(`
@@ -72,10 +89,7 @@ export async function createLoopTurn(params: {
 }
 
 /** Update a loop turn with allow-listed fields */
-export async function updateLoopTurn(
-  id: number,
-  updates: Partial<Record<string, unknown>>
-): Promise<void> {
+export async function updateLoopTurn(id: number, updates: Partial<LoopTurnUpdate>): Promise<void> {
   const db = getDb();
 
   const updateResult = buildUpdate(updates, LOOP_TURN_UPDATE_COLUMNS, {
@@ -91,6 +105,18 @@ export async function updateLoopTurn(
   const values = [...updateResult.values, id];
   const sql = `UPDATE loop_turns SET ${updateResult.setSql} WHERE id = ?`;
   db.prepare(sql).run(...values);
+}
+
+/** Mark a loop turn as failed and persist its error details */
+export async function saveLoopTurnError(
+  id: number,
+  error: { message: string; type?: string }
+): Promise<void> {
+  await updateLoopTurn(id, {
+    success: false,
+    errorMessage: error.message,
+    errorType: error.type,
+  });
 }
 
 /** Get turns for a specific loop */
@@ -111,18 +137,43 @@ export async function countRecentFailures(
 ): Promise<number> {
   const db = getDb();
 
-  let sql = 'SELECT COUNT(*) as count FROM loop_turns WHERE model = ? AND success = 0';
+  let sql = `
+    SELECT COUNT(*) as count
+    FROM loop_turns
+    INNER JOIN loop_history ON loop_history.id = loop_turns.loop_id
+    WHERE loop_turns.model = ? AND loop_turns.success = 0
+  `;
   const params: unknown[] = [model];
 
   if (options?.featureType) {
-    // Join with loop_history to filter by feature type
-    sql += ` AND loop_id IN (SELECT id FROM loop_history WHERE feature_type = ?)`;
+    sql += ` AND loop_history.feature_type = ?`;
     params.push(options.featureType);
   }
 
   if (options?.withinLoops) {
-    sql += ` LIMIT ?`;
-    params.push(options.withinLoops * 2); // fetch more to count failures
+    let recentLoopSql = `
+      SELECT id
+      FROM loop_history
+    `;
+    const recentLoopParams: unknown[] = [];
+
+    if (options.featureType) {
+      recentLoopSql += ` WHERE feature_type = ?`;
+      recentLoopParams.push(options.featureType);
+    }
+
+    recentLoopSql += `
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?
+    `;
+    recentLoopParams.push(options.withinLoops);
+
+    const recentLoopIds = db.prepare(recentLoopSql).all(...recentLoopParams) as Array<{ id: number }>;
+    if (recentLoopIds.length === 0) return 0;
+
+    const placeholders = recentLoopIds.map(() => '?').join(', ');
+    sql += ` AND loop_turns.loop_id IN (${placeholders})`;
+    params.push(...recentLoopIds.map(row => row.id));
   }
 
   const result = db.prepare(sql).get(...params) as { count: number };

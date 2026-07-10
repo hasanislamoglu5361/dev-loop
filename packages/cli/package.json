@@ -28,6 +28,7 @@
   },
   "dependencies": {
     "@dev-loop/core": "0.1.0",
+    "@dev-loop/ui": "0.1.0",
     "commander": "^12.1.0"
   },
   "devDependencies": {
