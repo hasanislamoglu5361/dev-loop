@@ -2,6 +2,8 @@
 // Channel interfaces and sender implementations for dev-loop notifications.
 // Senders are safe to call even when disabled — they return 'skipped' status.
 
+import cron, { type ScheduledTask } from 'node-cron';
+
 export type ChannelName = 'telegram' | 'slack' | 'email' | 'desktop' | 'sound';
 
 /** Telegram channel configuration (subset of full config). */
@@ -140,22 +142,23 @@ export function cronToIntervalMs(cron: string): number {
 export function startDigest(
   config: { enabled: boolean; cron: string },
   sendDigest: () => void | Promise<void>,
-  scheduler: (fn: () => void, ms: number) => ReturnType<typeof setInterval> = setInterval,
-): ReturnType<typeof setInterval> | undefined {
+  scheduler?: (fn: () => void, ms: number) => ReturnType<typeof setInterval>,
+): ReturnType<typeof setInterval> | ScheduledTask | undefined {
   if (!config.enabled) {
     return undefined;
   }
 
-  const intervalMs = cronToIntervalMs(config.cron);
-  return scheduler(() => {
-    void sendDigest();
-  }, intervalMs);
+  const callback = () => { void Promise.resolve(sendDigest()).catch(() => {}); };
+  if (scheduler) return scheduler(callback, cronToIntervalMs(config.cron));
+  if (cron.validate(config.cron)) return cron.schedule(config.cron, callback);
+  return setInterval(callback, cronToIntervalMs(config.cron));
 }
 
 /** Stop a scheduled digest (clears its timer). */
-export function stopDigest(timerId?: ReturnType<typeof setInterval>): boolean {
+export function stopDigest(timerId?: ReturnType<typeof setInterval> | ScheduledTask): boolean {
   if (timerId) {
-    clearInterval(timerId);
+    if (typeof (timerId as ScheduledTask).stop === 'function') (timerId as ScheduledTask).stop();
+    else clearInterval(timerId as ReturnType<typeof setInterval>);
     return true;
   }
   return false;

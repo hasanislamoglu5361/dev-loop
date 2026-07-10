@@ -75,4 +75,14 @@ describe('FEATURE088 - Scheduled digest start/stop', () => {
     expect(sendDigest).toHaveBeenCalledTimes(1);
     stopDigest(timer);
   });
+
+  it('uses a stoppable wall-clock scheduler for five-field cron expressions', () => {
+    const sendDigest = vi.fn();
+
+    const timer = startDigest({ enabled: true, cron: '0 8 * * *' }, sendDigest);
+    expect(timer).toEqual(expect.objectContaining({ start: expect.any(Function), stop: expect.any(Function) }));
+    vi.advanceTimersByTime(24 * 60 * 60 * 1000);
+    expect(sendDigest).toHaveBeenCalledTimes(1);
+    expect(stopDigest(timer)).toBe(true);
+  });
 });

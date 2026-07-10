@@ -163,7 +163,13 @@ export class NotificationDispatcher {
     }
     const client = channel.createClient?.();
     try {
-      await client?.send(message);
+      if (!client) {
+        return { channel: channel.name, status: 'failed', error: 'Channel client is unavailable.' };
+      }
+      const outcome = await client.send(message);
+      if (isFailedOutcome(outcome)) {
+        return { channel: channel.name, status: 'failed', error: outcome.error ?? 'Channel delivery failed.' };
+      }
       return { channel: channel.name, status: 'sent' };
     } catch (error) {
       const err = error instanceof Error ? error.message : String(error);
@@ -177,6 +183,10 @@ export class NotificationDispatcher {
       await this.logCallback(entry);
     } catch { /* logger should not crash dispatch */ }
   }
+}
+
+function isFailedOutcome(value: unknown): value is { ok: false; error?: string } {
+  return value !== null && typeof value === 'object' && 'ok' in value && (value as { ok?: unknown }).ok === false;
 }
 
 // Re-export channel types for callers.

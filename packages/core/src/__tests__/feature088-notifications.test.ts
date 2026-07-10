@@ -66,4 +66,26 @@ describe('FEATURE088 - Notification Channels and Dispatcher', () => {
     expect(logs[0].message).not.toContain('sk-secret-value');
     expect(logs[0].message).not.toContain('hunter2');
   });
+
+  it('treats an adapter failure outcome as a failed delivery', async () => {
+    const dispatcher = new NotificationDispatcher({
+      channels: [{ name: 'telegram', enabled: true, events: ['success'], createClient: () => ({
+        send: async () => ({ ok: false, error: 'telegram timed out' }),
+      }) }],
+    });
+
+    await expect(dispatcher.dispatch({ type: 'success', message: 'done' })).resolves.toEqual({
+      results: [{ channel: 'telegram', status: 'failed', error: 'telegram timed out' }],
+    });
+  });
+
+  it('fails explicitly when an enabled channel has no client', async () => {
+    const dispatcher = new NotificationDispatcher({
+      channels: [{ name: 'desktop', enabled: true, events: ['success'] }],
+    });
+
+    await expect(dispatcher.dispatch({ type: 'success', message: 'done' })).resolves.toEqual({
+      results: [{ channel: 'desktop', status: 'failed', error: 'Channel client is unavailable.' }],
+    });
+  });
 });

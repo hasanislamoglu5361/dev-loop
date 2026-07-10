@@ -468,6 +468,14 @@ export {
   startDigest,
   stopDigest,
 } from './notifications/channels.js';
+export {
+  buildChannelConfigs,
+  createDesktopClient,
+  createEmailClient,
+  createSlackClient,
+  createSoundClient,
+  createTelegramClient,
+} from './notifications/adapters.js';
 export type {
   ChannelConfigMap,
   ChannelName,
@@ -576,4 +584,3 @@ export {
   mergeGitignore,
   mergeVSCodeSettings,
 } from './context/init-editor-support.js';
-
